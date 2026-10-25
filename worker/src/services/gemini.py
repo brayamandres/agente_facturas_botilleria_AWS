@@ -93,7 +93,9 @@ def extraer_datos_factura(ruta_imagen):
             err_msg = str(e)
             es_transitorio = any(c in err_msg for c in ["503", "429", "UNAVAILABLE", "RESOURCE_EXHAUSTED", "overloaded", "quota"])
             if es_transitorio:
-                logger.warning("Fallo transitorio en modelo Gemini '%s' (%s). Probando siguiente modelo de respaldo...", modelo, err_msg)
+                logger.warning("Fallo transitorio en modelo Gemini '%s' (%s). Esperando 1.5s y probando siguiente modelo de respaldo...", modelo, err_msg)
+                import time
+                time.sleep(1.5)
             else:
                 logger.error("Error definitivo/de configuración en modelo Gemini '%s': %s", modelo, err_msg)
 

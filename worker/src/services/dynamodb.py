@@ -240,10 +240,18 @@ def obtener_producto_por_sku(sku: str) -> Dict[str, Any]:
         return {"encontrado": False, "mensaje": str(e)}
 
 
-def consultar_duplicidad_en_historial(folio: Optional[str], proveedor: Optional[str] = None) -> Dict[str, Any]:
-    """Verifica en la tabla de historial de DynamoDB si una factura ya fue registrada."""
+def consultar_duplicidad_en_historial(
+    folio: Optional[str],
+    proveedor: Optional[str] = None,
+    factura_id_actual: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Verifica en la tabla de historial de DynamoDB si una factura ya fue registrada por otra transacción.
+    Excluye la transacción actual (factura_id_actual) para evitar falsos positivos y solo considera
+    estados finales o en resolución.
+    """
     folio_limpio = str(folio).strip() if folio is not None else ""
-    if not folio_limpio or folio_limpio.lower() in ["none", "null", "s/f", "n/a"]:
+    if not folio_limpio or folio_limpio.lower() in ["none", "null", "s/f", "n/a", "pendiente_extraccion"]:
         return {
             "es_duplicada": False,
             "estado_verificacion": "FOLIO_ILEGIBLE",
@@ -257,8 +265,16 @@ def consultar_duplicidad_en_historial(folio: Optional[str], proveedor: Optional[
         from boto3.dynamodb.conditions import Attr
         filtro = Attr("folio").eq(folio_limpio)
         proveedor_limpio = str(proveedor).strip() if proveedor is not None else ""
-        if proveedor_limpio and proveedor_limpio.lower() not in ["none", "null", "desconocido", "n/a"]:
+        if proveedor_limpio and proveedor_limpio.lower() not in ["none", "null", "desconocido", "n/a", "pendiente_extraccion"]:
             filtro = filtro & Attr("proveedor").eq(proveedor_limpio)
+
+        # Excluir el propio registro en curso para no auto-detectarse como duplicado
+        if factura_id_actual and str(factura_id_actual).strip():
+            filtro = filtro & Attr("id").ne(str(factura_id_actual).strip())
+
+        # Solo considerar registros que completaron o están en resolución de stock
+        # (ignora intentos en análisis inicial o abortados previamente)
+        filtro = filtro & Attr("estado").is_in(["COMPLETADO", "REQUIERE_REVISION_MANUAL", "COMPLETADO_CON_ERRORES"])
 
         res = table.scan(FilterExpression=filtro, Limit=1)
         items = res.get("Items", [])
@@ -332,9 +348,10 @@ def actualizar_stock_y_costo_dynamo(
                 "mensaje": f"El folio '{folio_limpio}' ya fue aplicado previamente a este SKU. Se omite incremento."
             }
 
-        # 2. Expresión de actualización atómica
+        # 2. Expresión de actualización atómica (cláusulas únicas SET y ADD)
         now_iso = datetime.now(timezone.utc).isoformat()
-        update_expr = "ADD stock_actual :cant SET precio_costo = :costo, actualizado_en = :now"
+        set_clauses = ["precio_costo = :costo", "actualizado_en = :now"]
+        add_clauses = ["stock_actual :cant"]
         expr_values: Dict[str, Any] = {
             ":cant": int(cantidad),
             ":costo": Decimal(str(nuevo_costo)),
@@ -342,12 +359,14 @@ def actualizar_stock_y_costo_dynamo(
         }
 
         if nuevo_precio_venta is not None and float(nuevo_precio_venta) > 0:
-            update_expr += ", precio_venta = :pv"
+            set_clauses.append("precio_venta = :pv")
             expr_values[":pv"] = Decimal(str(nuevo_precio_venta))
 
         if folio_limpio:
-            update_expr += " ADD folios_aplicados :folio_set"
+            add_clauses.append("folios_aplicados :folio_set")
             expr_values[":folio_set"] = {folio_limpio}
+
+        update_expr = f"SET {', '.join(set_clauses)} ADD {', '.join(add_clauses)}"
 
         upd_res = table.update_item(
             Key={"sku": sku},

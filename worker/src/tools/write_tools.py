@@ -121,7 +121,7 @@ def registrar_nuevo_producto(
         "embedding": vector
     }
     if folio_limpio:
-        datos_producto["folios_aplicados"] = [folio_limpio]
+        datos_producto["folios_aplicados"] = {folio_limpio}
 
     return registrar_nuevo_producto_dynamo(datos_producto)
 

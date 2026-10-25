@@ -515,8 +515,11 @@
         let estadoBadge = "bg-slate-700 text-slate-300";
 
         if (estado === "COMPLETADO") estadoBadge = "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30";
+        else if (estado === "DUPLICADO_IGNORADO") estadoBadge = "bg-purple-500/20 text-purple-300 border border-purple-500/30";
         else if (estado === "REQUIERE_REVISION_MANUAL" || estado === "EN_COLA" || pendientes > 0) estadoBadge = "bg-amber-500/20 text-amber-400 border border-amber-500/30";
         else if (estado.includes("ERROR")) estadoBadge = "bg-red-500/20 text-red-400 border border-red-500/30";
+
+        const estadoTexto = estado === "DUPLICADO_IGNORADO" ? "DUPLICADA (OMITIDA)" : (pendientes > 0 ? `REVISIÓN (${pendientes})` : estado);
 
         return `
           <tr class="hover:bg-slate-700/30 transition">
@@ -527,7 +530,7 @@
             <td class="py-2.5 px-4 text-right font-mono text-emerald-400 font-semibold">$${Number(h.total_factura || 0).toLocaleString("es-CL")}</td>
             <td class="py-2.5 px-4 text-center">
               <span class="px-2.5 py-0.5 rounded-full text-[11px] font-bold ${estadoBadge}">
-                ${pendientes > 0 ? `REVISIÓN (${pendientes})` : estado}
+                ${estadoTexto}
               </span>
             </td>
             <td class="py-2.5 px-4 text-center">

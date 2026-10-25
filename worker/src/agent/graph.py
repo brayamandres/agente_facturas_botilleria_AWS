@@ -184,9 +184,14 @@ def node_verificar_duplicidad(state: AgentState) -> Dict[str, Any]:
     datos = state["datos_factura"]
     folio = datos.get("numero_factura")
     proveedor = datos.get("proveedor")
+    factura_id = state.get("factura_id")
 
-    logger.info("[Nodo Duplicidad] Comprobando en DynamoDB para folio '%s' de '%s'...", folio, proveedor)
-    resultado = consultar_duplicidad_factura.invoke({"folio": folio, "proveedor": proveedor})
+    logger.info("[Nodo Duplicidad] Comprobando en DynamoDB para folio '%s' de '%s' (excluyendo ID: %s)...", folio, proveedor, factura_id)
+    resultado = consultar_duplicidad_factura.invoke({
+        "folio": folio,
+        "proveedor": proveedor,
+        "factura_id_actual": factura_id
+    })
 
     es_duplicada = bool(resultado.get("es_duplicada", False))
     estado_verificacion = resultado.get("estado_verificacion", "")
@@ -209,20 +214,37 @@ def node_manejar_duplicada(state: AgentState) -> Dict[str, Any]:
     Nodo Alternativo: Detiene el flujo adaptativamente si la factura ya existe en DynamoDB
     o si ocurrió un error al consultar la base de datos.
     """
+    factura_id = state.get("factura_id")
+
     if state.get("estado_final") == "ERROR":
         msg = "ERROR: Proceso abortado debido a un fallo en la consulta a DynamoDB."
         logger.error("[Nodo Control] %s", msg)
+        _registrar_progreso_en_dynamodb(
+            factura_id,
+            msg,
+            estado_parcial="ERROR"
+        )
         return {
             "estado_final": "ERROR",
             "mensajes_bitacora": state["mensajes_bitacora"] + [msg]
         }
 
     info = state.get("info_duplicada") or {}
+    folio = state["datos_factura"].get("numero_factura", "S/F")
+    proveedor = state["datos_factura"].get("proveedor", "Proveedor")
+    fecha = info.get("fecha", "fecha previa")
     msg = (
-        f"ADVERTENCIA: Proceso abortado para evitar duplicar stock. "
-        f"Factura folio '{state['datos_factura'].get('numero_factura')}' registrada el {info.get('fecha')}."
+        f"⚠️ FACTURA DUPLICADA: Proceso abortado para evitar duplicar stock. "
+        f"La factura folio '{folio}' de '{proveedor}' ya fue registrada previamente el {fecha}."
     )
     logger.warning("[Nodo Control] %s", msg)
+    _registrar_progreso_en_dynamodb(
+        factura_id,
+        msg,
+        estado_parcial="DUPLICADO_IGNORADO",
+        proveedor=proveedor,
+        folio=folio
+    )
 
     return {
         "estado_final": "DUPLICADO_IGNORADO",
@@ -547,6 +569,13 @@ def node_aplicar_cambios(state: AgentState) -> Dict[str, Any]:
     logger.info("[Nodo Escritura DynamoDB] %s | Estado: %s", msg, registro_item["estado"])
     items_actualizados = list(state.get("items_procesados", [])) + [registro_item]
     bitacora = list(state.get("mensajes_bitacora", [])) + ([msg] if msg else [])
+
+    # Registrar progreso en tiempo real para visualización en terminal web
+    _registrar_progreso_en_dynamodb(
+        state.get("factura_id"),
+        f"[{registro_item['estado']}] {msg}",
+        items=items_actualizados
+    )
 
     return {
         "items_procesados": items_actualizados,

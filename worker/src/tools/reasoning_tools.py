@@ -32,7 +32,7 @@ def validar_respuesta_homologacion(
     """
     Valida estrictamente que la respuesta del LLM cumpla tipos, rangos y que el SKU seleccionado
     pertenezca efectivamente a los candidatos recuperados desde DynamoDB.
-    Calibra la confianza combinando el juicio semántico del LLM (70%) con la similitud vectorial coseno (30%).
+    El criterio del LLM tiene el 100% del peso en la confianza de homologación.
     """
     if not isinstance(decision, dict):
         return {
@@ -56,7 +56,7 @@ def validar_respuesta_homologacion(
     if not justificacion:
         justificacion = "Sin justificación proporcionada."
 
-    # 3. Normalizar confianza en rango [0.0, 1.0]
+    # 3. Normalizar confianza en rango [0.0, 1.0] (100% peso del LLM)
     conf_raw = decision.get("confianza", 0.0)
     try:
         confianza = float(conf_raw) if conf_raw is not None and not isinstance(conf_raw, bool) else 0.0
@@ -91,11 +91,9 @@ def validar_respuesta_homologacion(
             confianza = 0.0
             requiere_revision = True
         else:
-            # 6. Calibración Híbrida: 70% Confianza LLM + 30% Similitud Coseno de DynamoDB
-            candidato_match = mapa_candidatos[sku]
-            sim_vec = candidato_match.get("similitud_vectorial")
-            if isinstance(sim_vec, (int, float)) and 0.0 <= float(sim_vec) <= 1.0:
-                confianza = round((confianza * 0.7) + (float(sim_vec) * 0.3), 4)
+            # 6. Criterio 100% LLM: se omite el peso de la similitud coseno vectorial
+            # para no penalizar matches correctos debido a diferencias de formato en glosas crudas.
+            pass
 
     # 7. Coherencia final de revisión humana
     if sku is None or confianza < umbral_confianza:

@@ -39,9 +39,11 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b"
 DEFAULT_GEMINI_MODELS = [
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
     "gemini-3.5-flash",
     "gemini-3.8-flash",
-    "gemini-3.5-flash-lite",
+    "gemini-2.5-flash-lite",
     "gemini-2.5-pro"
 ]
 

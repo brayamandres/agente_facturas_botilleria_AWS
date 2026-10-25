@@ -36,7 +36,8 @@ def extraer_factura_desde_imagen(ruta_imagen: str) -> Dict[str, Any]:
 @tool
 def consultar_duplicidad_factura(
     folio: Optional[str] = None,
-    proveedor: Optional[str] = None
+    proveedor: Optional[str] = None,
+    factura_id_actual: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Verifica en el historial de DynamoDB si la factura ya fue procesada anteriormente
@@ -45,11 +46,16 @@ def consultar_duplicidad_factura(
     Args:
         folio (str | None): Folio o número de la factura a verificar.
         proveedor (str | None): Nombre del proveedor de la factura a verificar.
+        factura_id_actual (str | None): ID de la factura actual para evitar auto-detección.
         
     Returns:
         dict: Diccionario con 'es_duplicada', 'estado_verificacion' y un mensaje explicativo.
     """
-    return consultar_duplicidad_en_historial(folio=folio, proveedor=proveedor)
+    return consultar_duplicidad_en_historial(
+        folio=folio,
+        proveedor=proveedor,
+        factura_id_actual=factura_id_actual
+    )
 
 
 @tool

@@ -613,15 +613,42 @@
             }
           }
 
-          // Si completó o dio error
+          // Si completó o dio error o duplicado
           if (data.estado === "COMPLETADO") {
             clearInterval(intervaloPolling);
             spinnerStatus.classList.add("hidden");
             textPipelineStatus.innerText = "Procesamiento finalizado con éxito";
-            document.getElementById("badge-estado").className = "text-xs px-2.5 py-1 rounded-full bg-emerald-500/20 text-emerald-400 font-bold";
+            document.getElementById("badge-estado").className = "text-xs px-2.5 py-1 rounded-full bg-emerald-500/20 text-emerald-400 font-bold border border-emerald-500/30";
             document.getElementById("badge-estado").innerText = "COMPLETADO";
             btnSubmit.removeAttribute("disabled");
             btnSubmit.innerHTML = `<i class="fa-solid fa-check"></i><span>Factura Procesada</span>`;
+            verificarFacturasPendientesGlobal();
+          } else if (data.estado === "DUPLICADO_IGNORADO") {
+            clearInterval(intervaloPolling);
+            spinnerStatus.classList.add("hidden");
+            textPipelineStatus.innerText = "Factura duplicada: Stock protegido contra duplicación";
+            document.getElementById("badge-estado").className = "text-xs px-2.5 py-1 rounded-full bg-purple-500/20 text-purple-300 font-bold border border-purple-500/30";
+            document.getElementById("badge-estado").innerText = "DUPLICADA (OMITIDA)";
+            btnSubmit.removeAttribute("disabled");
+            btnSubmit.innerHTML = `<i class="fa-solid fa-clone"></i><span>Subir Otra Factura</span>`;
+            verificarFacturasPendientesGlobal();
+          } else if (data.estado === "ERROR") {
+            clearInterval(intervaloPolling);
+            spinnerStatus.classList.add("hidden");
+            textPipelineStatus.innerText = "Error crítico durante el procesamiento";
+            document.getElementById("badge-estado").className = "text-xs px-2.5 py-1 rounded-full bg-red-500/20 text-red-400 font-bold border border-red-500/30";
+            document.getElementById("badge-estado").innerText = "ERROR EN PROCESO";
+            btnSubmit.removeAttribute("disabled");
+            btnSubmit.innerHTML = `<i class="fa-solid fa-triangle-exclamation"></i><span>Reintentar Subida</span>`;
+            verificarFacturasPendientesGlobal();
+          } else if (data.estado === "COMPLETADO_CON_ERRORES") {
+            clearInterval(intervaloPolling);
+            spinnerStatus.classList.add("hidden");
+            textPipelineStatus.innerText = "Finalizado con observaciones";
+            document.getElementById("badge-estado").className = "text-xs px-2.5 py-1 rounded-full bg-amber-500/20 text-amber-300 font-bold border border-amber-500/30";
+            document.getElementById("badge-estado").innerText = "CON ADVERTENCIAS";
+            btnSubmit.removeAttribute("disabled");
+            btnSubmit.innerHTML = `<i class="fa-solid fa-check"></i><span>Finalizado con Observaciones</span>`;
             verificarFacturasPendientesGlobal();
           }
 
@@ -639,9 +666,10 @@
         const linea = logs[i];
         let colorClase = "text-slate-300";
 
-        if (linea.includes("[ERROR]") || linea.includes("Error")) colorClase = "text-red-400 font-semibold";
-        else if (linea.includes("[WARNING]") || linea.includes("Revisión") || linea.includes("HITL")) colorClase = "text-amber-300 font-medium";
-        else if (linea.includes("DynamoDB") || linea.includes("VectorIndex")) colorClase = "text-purple-300";
+        if (linea.includes("[ERROR]") || linea.includes("Error") || linea.includes("❌")) colorClase = "text-red-400 font-semibold";
+        else if (linea.includes("[WARNING]") || linea.includes("Revisión") || linea.includes("HITL") || linea.includes("ADVERTENCIA")) colorClase = "text-amber-300 font-medium";
+        else if (linea.includes("DUPLICAD") || linea.includes("DUPLICADA") || linea.includes("OMITID")) colorClase = "text-purple-300 font-semibold";
+        else if (linea.includes("DynamoDB") || linea.includes("VectorIndex") || linea.includes("AUTO_HOMOLOGADO") || linea.includes("ACTUALIZADO") || linea.includes("CREADO_NUEVO")) colorClase = "text-emerald-300 font-mono";
         else if (linea.includes("Gemini") || linea.includes("extraída")) colorClase = "text-blue-300";
         else if (linea.includes("éxito") || linea.includes("COMPLETADO")) colorClase = "text-emerald-400 font-semibold";
 

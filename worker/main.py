@@ -126,6 +126,15 @@ def procesar_factura_evento(evento: Dict[str, Any], grafo) -> bool:
             "Fallo crítico durante el procesamiento de la Factura ID: %s tras %.2f segundos: %s",
             factura_id, tiempo_total, str(e), exc_info=True
         )
+        try:
+            from worker.src.agent.graph import _registrar_progreso_en_dynamodb
+            _registrar_progreso_en_dynamodb(
+                factura_id,
+                f"❌ ERROR CRÍTICO durante el procesamiento: {str(e)}",
+                estado_parcial="ERROR"
+            )
+        except Exception as ex_db:
+            logger.error("No se pudo registrar estado de error en DynamoDB: %s", ex_db)
         return False
 
     finally:
