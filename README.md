@@ -21,50 +21,52 @@ En las botillerías y comercializadoras de licores chilenas, las facturas mayori
 
 ```mermaid
 flowchart TD
-    Cliente([Cliente / Operador de Botillería]) -->|POST /facturas/upload\nGET /health| ALB[Application Load Balancer / Ingress]
+    Cliente(["Cliente / Operador de Botillería"]) -->|"POST /facturas/upload<br/>GET /health"| ALB["Application Load Balancer / Ingress"]
 
     subgraph ECS_Cluster ["Amazon ECS Cluster (Fargate / EC2)"]
         subgraph Microservicio_API ["Microservicio API (FastAPI)"]
-            ALB -->|Petición HTTP| C_API["Contenedor API\n(python:3.11-slim)\n~100-120 MB RAM"]
+            C_API["Contenedor API<br/>(python:3.11-slim)<br/>~100-120 MB RAM"]
         end
 
         subgraph Microservicio_Worker ["Microservicio Worker (LangGraph AI)"]
-            C_Worker["Contenedor Worker\n(python:3.11-slim)\n~300-380 MB RAM"]
+            C_Worker["Contenedor Worker<br/>(python:3.11-slim)<br/>~300-380 MB RAM"]
         end
     end
 
     subgraph AWS_Cloud_Services ["Servicios Gestionados AWS"]
-        S3[("Amazon S3 Bucket\n'botilleria-facturas-raw'")]
-        SQS[("Amazon SQS Queue\n'botilleria-facturas-queue'")]
-        DDB_Prod[("Amazon DynamoDB: 'botilleria-productos'\n• VectorIndexes (384d, COSINE)\n• Actualización Atómica ADD")]
-        DDB_Audit[("Amazon DynamoDB: 'botilleria-historial-facturas'\n• Auditoría Transaccional")]
-        CloudWatch[("Amazon CloudWatch Logs\n• Structured JSON Logging")]
+        S3[("Amazon S3 Bucket<br/>'botilleria-facturas-raw'")]
+        SQS[("Amazon SQS Queue<br/>'botilleria-facturas-queue'")]
+        DDB_Prod[("Amazon DynamoDB: 'botilleria-productos'<br/>• VectorIndexes (384d, COSINE)<br/>• Actualización Atómica ADD")]
+        DDB_Audit[("Amazon DynamoDB: 'botilleria-historial-facturas'<br/>• Auditoría Transaccional")]
+        CloudWatch[("Amazon CloudWatch Logs<br/>• Structured JSON Logging")]
     end
 
     subgraph AI_Inference ["Servicios Externos de Inteligencia"]
-        Gemini["Google Gemini Vision API\n(OCR Multimodal)"]
-        LLM["Groq / OpenAI API\n(Razonamiento Homologación)"]
+        Gemini["Google Gemini Vision API<br/>(OCR Multimodal)"]
+        LLM["Groq / OpenAI API<br/>(Razonamiento Homologación)"]
     end
 
+    ALB -->|"Petición HTTP"| C_API
+
     %% Flujos de Ingesta
-    C_API -->|1. PutObject (Guarda Imagen)| S3
-    C_API -->|2. SendMessage (factura_id, s3_key)| SQS
-    C_API -->|3. HTTP 202 Accepted| Cliente
+    C_API -->|"1. PutObject (guarda imagen)"| S3
+    C_API -->|"2. SendMessage (factura_id, s3_key)"| SQS
+    C_API -->|"3. HTTP 202 Accepted"| Cliente
 
     %% Flujos del Worker
-    C_Worker -->|4. Long Polling (WaitTime=20s)| SQS
-    C_Worker -->|5. GetObject temporal a /tmp/| S3
-    C_Worker -->|6. Percepción Multimodal| Gemini
-    C_Worker -->|7. Búsqueda Vectorial Nativa search_vectors()| DDB_Prod
-    C_Worker -->|8. Razonamiento Semántico con Pydantic| LLM
-    C_Worker -->|9. Actualización Atómica de Stock| DDB_Prod
-    C_Worker -->|10. Registro de Auditoría| DDB_Audit
-    C_Worker -->|11. Borrado de archivo en /tmp/ (Stateless)| C_Worker
-    C_Worker -->|12. delete_message() tras Éxito (ACK)| SQS
+    C_Worker -->|"4. Long Polling (WaitTime=20s)"| SQS
+    C_Worker -->|"5. GetObject temporal a /tmp/"| S3
+    C_Worker -->|"6. Percepción Multimodal"| Gemini
+    C_Worker -->|"7. Búsqueda vectorial nativa: search_vectors()"| DDB_Prod
+    C_Worker -->|"8. Razonamiento semántico con Pydantic"| LLM
+    C_Worker -->|"9. Actualización atómica de stock"| DDB_Prod
+    C_Worker -->|"10. Registro de auditoría"| DDB_Audit
+    C_Worker -->|"11. Borrado de archivo en /tmp/ (Stateless)"| C_Worker
+    C_Worker -->|"12. delete_message() tras éxito (ACK)"| SQS
 
     %% Trazabilidad
-    C_API -.->|Métricas y Errores| CloudWatch
-    C_Worker -.->|Tiempos de Ejecución| CloudWatch
+    C_API -.->|"Métricas y errores"| CloudWatch
+    C_Worker -.->|"Tiempos de ejecución"| CloudWatch
 ```
 
 ---

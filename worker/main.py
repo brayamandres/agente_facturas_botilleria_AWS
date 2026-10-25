@@ -88,9 +88,12 @@ def procesar_factura_evento(evento: Dict[str, Any], grafo) -> bool:
             "estado_final": "INICIADO"
         }
 
-        # 3. Ejecución del Grafo de LangGraph
-        config = {"configurable": {"thread_id": f"worker_{factura_id}"}}
-        logger.info("Ejecutando grafo LangGraph para Factura ID: %s...", factura_id)
+        # 3. Ejecución del Grafo de LangGraph (con límite de recursión amplio para facturas de múltiples ítems)
+        config = {
+            "configurable": {"thread_id": f"worker_{factura_id}"},
+            "recursion_limit": 300
+        }
+        logger.info("Ejecutando grafo LangGraph para Factura ID: %s (recursion_limit=300)...", factura_id)
         estado_final = grafo.invoke(estado_inicial, config)
 
         tiempo_fin = time.time()
@@ -100,10 +103,18 @@ def procesar_factura_evento(evento: Dict[str, Any], grafo) -> bool:
         total_items = len(estado_final.get("items_procesados", []))
         auditoria_id = estado_final.get("auditoria_id")
 
+        if estado_resultado == "ERROR":
+            logger.error(
+                "Factura ID: %s finalizó con estado ERROR tras %.2f segundos. Ítems procesados: %d. Mensaje retenido en SQS.",
+                factura_id, tiempo_total, total_items
+            )
+            logger.info("================================================================================")
+            return False
+
         logger.info(
             "Factura ID: %s completada con éxito. Estado: %s | Ítems procesados: %d | "
             "Auditoría ID: %s | Tiempo total de procesamiento: %.2f segundos",
-            factura_id, estado_resultado, total_items, auditoría_id, tiempo_total
+            factura_id, estado_resultado, total_items, auditoria_id, tiempo_total
         )
         logger.info("================================================================================")
         return True
@@ -125,6 +136,86 @@ def procesar_factura_evento(evento: Dict[str, Any], grafo) -> bool:
                 logger.info("Archivo temporal '%s' eliminado. Contenedor en estado Stateless.", ruta_temporal)
             except Exception as ex_del:
                 logger.warning("No fue posible eliminar el archivo temporal '%s': %s", ruta_temporal, ex_del)
+
+
+def procesar_resolucion_humana(evento: Dict[str, Any]) -> bool:
+    """
+    Aplica transaccionalmente la decisión humana (HITL) tomada desde la interfaz web.
+    Da de alta un nuevo producto con su vector nativo en DynamoDB o actualiza el stock existente.
+    """
+    factura_id = evento.get("factura_id")
+    resolucion = evento.get("resolucion", {})
+    accion = resolucion.get("accion")  # "CREAR_NUEVO", "ASOCIAR_EXISTENTE", "OMITIR"
+    sku = resolucion.get("sku")
+    glosa = resolucion.get("glosa_original")
+    cantidad = int(resolucion.get("cantidad", 1))
+    costo = float(resolucion.get("precio_costo", 0.0))
+    venta = float(resolucion.get("precio_venta", 0.0)) if resolucion.get("precio_venta") else None
+
+    logger.info("Procesando evento RESOLUCION_HUMANA para Factura ID %s: Acción=%s, SKU=%s", factura_id, accion, sku)
+
+    from worker.src.tools.write_tools import registrar_nuevo_producto, actualizar_stock_y_costo
+    from worker.config import get_dynamodb_resource, DYNAMODB_TABLE_HISTORIAL
+
+    try:
+        if accion == "CREAR_NUEVO" and sku:
+            logger.info("Creando nuevo producto en DynamoDB con vector nativo para SKU: %s", sku)
+            registrar_nuevo_producto.invoke({
+                "sku": sku,
+                "nombre": resolucion.get("nombre", glosa),
+                "marca": resolucion.get("marca", "General"),
+                "categoria": resolucion.get("categoria", "Destilados"),
+                "subcategoria": resolucion.get("subcategoria", "General"),
+                "formato": resolucion.get("formato", "Unidad"),
+                "precio_costo": costo,
+                "precio_venta": venta or (costo * 1.4),
+                "stock_inicial": cantidad,
+            })
+
+        elif accion == "ASOCIAR_EXISTENTE" and sku:
+            logger.info("Actualizando stock en DynamoDB para SKU: %s (+%d unidades)", sku, cantidad)
+            actualizar_stock_y_costo.invoke({
+                "sku": sku,
+                "cantidad": cantidad,
+                "nuevo_costo": costo,
+                "nuevo_precio_venta": venta,
+            })
+
+        # Actualizar registro histórico en DynamoDB
+        resource = get_dynamodb_resource()
+        table = resource.Table(DYNAMODB_TABLE_HISTORIAL)
+        res_factura = table.get_item(Key={"id": factura_id})
+        item_factura = res_factura.get("Item", {})
+
+        items = item_factura.get("items", [])
+        for it in items:
+            if it.get("glosa_original") == glosa or it.get("estado") == "REQUIERE_REVISION_MANUAL":
+                it["estado"] = "RESUELTO_MANUAL" if accion != "OMITIR" else "OMITIDO_POR_HUMANO"
+                it["sku_homologado"] = sku if accion != "OMITIR" else None
+
+        hora_str = datetime.now().strftime("%H:%M:%S")
+        log_msg = f"[{hora_str}] [RESOLUCIÓN APLICADA] Ítem '{glosa}' resuelto por humano: {accion} (SKU: {sku or 'OMITIDO'}). Inventario actualizado en DynamoDB."
+
+        table.update_item(
+            Key={"id": factura_id},
+            UpdateExpression="SET #st = :nuevo_st, #items = :items, bitacora = list_append(if_not_exists(bitacora, :vacia), :nuevo_log)",
+            ExpressionAttributeNames={
+                "#st": "estado",
+                "#items": "items"
+            },
+            ExpressionAttributeValues={
+                ":nuevo_st": "COMPLETADO",
+                ":items": items,
+                ":nuevo_log": [log_msg],
+                ":vacia": []
+            }
+        )
+        logger.info("Factura ID %s actualizada a COMPLETADO tras resolución humana exitosa.", factura_id)
+        return True
+
+    except Exception as e:
+        logger.error("Error al procesar resolución humana para factura ID %s: %s", factura_id, str(e), exc_info=True)
+        return False
 
 
 def iniciar_consumidor_sqs():
@@ -174,8 +265,12 @@ def iniciar_consumidor_sqs():
                     sqs.delete_message(QueueUrl=SQS_QUEUE_URL, ReceiptHandle=receipt_handle)
                     continue
 
-                # Procesar la factura
-                exito = procesar_factura_evento(evento, grafo)
+                # Procesar según tipo de evento
+                tipo_evento = evento.get("tipo_evento")
+                if tipo_evento == "RESOLUCION_HUMANA":
+                    exito = procesar_resolucion_humana(evento)
+                else:
+                    exito = procesar_factura_evento(evento, grafo)
 
                 # Tolerancia a Fallos: Solo eliminar el mensaje de SQS si el flujo fue exitoso
                 if exito:

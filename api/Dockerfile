@@ -18,8 +18,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Copiar e instalar dependencias de Python en una capa dedicada para optimizar caché
 COPY requirements.txt .
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --upgrade pip && \
+    pip install -r requirements.txt
 
 # Copiar el código del microservicio
 COPY . /app/api

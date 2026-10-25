@@ -6,6 +6,7 @@ Implementa:
 - Búsqueda vectorial nativa por similitud Coseno mediante 'dynamodb.search_vectors()'.
 - Actualizaciones atómicas de inventario e idempotencia con expresiones de condición.
 """
+import time
 import logging
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -41,13 +42,69 @@ def deserializar_item(item_dynamo: Dict[str, Any]) -> Dict[str, Any]:
     return res
 
 
+def esperar_indice_vectorial_activo(
+    table_name: str,
+    index_name: str,
+    timeout: int = 300,
+    poll_interval: int = 5
+) -> bool:
+    """
+    Espera de forma activa (polling) hasta que la tabla y su índice vectorial estén en estado ACTIVE
+    y el proceso de Backfilling haya concluido.
+    """
+    client = get_dynamodb_client()
+    inicio = time.time()
+    logger.info("Esperando a que el índice vectorial '%s' en tabla '%s' esté ACTIVE...", index_name, table_name)
+
+    while time.time() - inicio < timeout:
+        try:
+            desc = client.describe_table(TableName=table_name).get("Table", {})
+            table_status = desc.get("TableStatus")
+
+            if table_status == "ACTIVE":
+                vector_indexes = desc.get("VectorIndexes", [])
+                target_index = next((idx for idx in vector_indexes if idx.get("IndexName") == index_name), None)
+
+                if target_index:
+                    index_status = target_index.get("IndexStatus")
+                    backfilling = target_index.get("Backfilling", False)
+
+                    if index_status == "ACTIVE" and not backfilling:
+                        logger.info(
+                            "Índice vectorial '%s' en tabla '%s' está ACTIVE y listo para consultas (demoró %.1fs).",
+                            index_name, table_name, time.time() - inicio
+                        )
+                        return True
+                    else:
+                        logger.info(
+                            "Índice vectorial '%s': estado=%s, backfilling=%s. Reintentando en %ds...",
+                            index_name, index_status, backfilling, poll_interval
+                        )
+                else:
+                    logger.warning("Índice vectorial '%s' aún no aparece en describe_table. Reintentando...", index_name)
+            else:
+                logger.info("Tabla '%s': estado=%s. Reintentando en %ds...", table_name, table_status, poll_interval)
+
+        except Exception as e:
+            logger.warning("Error transitorio consultando estado de tabla '%s': %s", table_name, e)
+
+        time.sleep(poll_interval)
+
+    raise TimeoutError(
+        f"Tiempo de espera agotado ({timeout}s) esperando activación del índice vectorial '{index_name}' en '{table_name}'."
+    )
+
+
 def crear_tablas_si_no_existen():
     """
     Provisiona las tablas DynamoDB requeridas si aún no existen.
-    Crea la tabla de productos configurando nativamente VectorIndexes con métrica COSINE.
+    Crea la tabla de productos configurando nativamente VectorIndexes con métrica COSINE
+    y espera a que el índice esté activo.
+    Intenta crear ambas tablas de forma independiente y reporta todos los errores al final.
     """
     client = get_dynamodb_client()
     tablas_existentes = client.list_tables().get("TableNames", [])
+    errores = []
 
     # 1. Tabla de Productos con Búsqueda Vectorial Nativa
     if DYNAMODB_TABLE_PRODUCTOS not in tablas_existentes:
@@ -72,10 +129,11 @@ def crear_tablas_si_no_existen():
                     }
                 ]
             )
-            logger.info("Tabla '%s' creada exitosamente con VectorIndexes.", DYNAMODB_TABLE_PRODUCTOS)
+            logger.info("Tabla '%s' creada. Esperando activación del índice vectorial...", DYNAMODB_TABLE_PRODUCTOS)
+            esperar_indice_vectorial_activo(DYNAMODB_TABLE_PRODUCTOS, DYNAMODB_VECTOR_INDEX_NAME)
         except Exception as e:
             logger.error("Error al crear tabla '%s': %s", DYNAMODB_TABLE_PRODUCTOS, str(e))
-            raise
+            errores.append(f"Fallo en tabla de productos '{DYNAMODB_TABLE_PRODUCTOS}': {str(e)}")
 
     # 2. Tabla de Historial de Facturas (Auditoría e Idempotencia)
     if DYNAMODB_TABLE_HISTORIAL not in tablas_existentes:
@@ -94,7 +152,10 @@ def crear_tablas_si_no_existen():
             logger.info("Tabla '%s' creada exitosamente.", DYNAMODB_TABLE_HISTORIAL)
         except Exception as e:
             logger.error("Error al crear tabla '%s': %s", DYNAMODB_TABLE_HISTORIAL, str(e))
-            raise
+            errores.append(f"Fallo en tabla de historial '{DYNAMODB_TABLE_HISTORIAL}': {str(e)}")
+
+    if errores:
+        raise RuntimeError("Errores durante el provisionamiento de tablas DynamoDB:\n" + "\n".join(errores))
 
 
 def buscar_productos_vectorial_nativo(vector_query: List[float], top_k: int = 3) -> List[Dict[str, Any]]:
@@ -111,8 +172,8 @@ def buscar_productos_vectorial_nativo(vector_query: List[float], top_k: int = 3)
     """
     client = get_dynamodb_client()
     try:
-        # Formatear el vector en el tipo de lista numérica DynamoDB
-        vector_attr = {"L": [{"N": str(float(val))} for val in vector_query]}
+        # SearchVector en Boto3 espera una lista de AttributeValues
+        vector_attr = [{"N": str(float(val))} for val in vector_query]
 
         logger.info(
             "Ejecutando search_vectors() nativo en DynamoDB [Tabla: %s, Índice: %s, TopK: %d]",
@@ -127,13 +188,18 @@ def buscar_productos_vectorial_nativo(vector_query: List[float], top_k: int = 3)
         )
 
         candidatos = []
-        for raw_item in response.get("Items", []):
+        for res_item in response.get("SearchResults", []):
+            raw_item = res_item.get("Item", {})
             data = deserializar_item(raw_item)
             sku = data.get("sku", "")
 
-            # Extraer score / similitud calculada nativamente por AWS
-            score_nativo = raw_item.get("_score", {}).get("N") or raw_item.get("similarity", {}).get("N")
-            similitud = float(score_nativo) if score_nativo is not None else 0.85
+            # Score retornado directamente en cada SearchResult
+            score_nativo = res_item.get("Score")
+            if score_nativo is not None:
+                similitud = float(score_nativo)
+            else:
+                logger.warning("No se encontró el campo 'Score' en el SearchResult para SKU '%s'.", sku)
+                similitud = 0.0
 
             item_cand = {
                 "sku": sku,

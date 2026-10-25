@@ -1,6 +1,5 @@
 # Dependencias del Microservicio Worker (LangGraph + IA + AWS)
-boto3==1.36.10
-langchain==0.3.14
+boto3>=1.43.64
 langchain-core==0.3.29
 langchain-openai==0.3.0
 langgraph==0.2.62

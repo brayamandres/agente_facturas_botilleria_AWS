@@ -17,10 +17,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
+# Instalar PyTorch CPU-only previamente para evitar descargar CUDA y paquetes nvidia-* (~2.5 GB)
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install torch==2.6.0+cpu --index-url https://download.pytorch.org/whl/cpu
+
 # Copiar e instalar dependencias en una capa aislada para aprovechar la caché de Docker
 COPY requirements.txt .
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --upgrade pip && \
+    pip install -r requirements.txt
 
 # Copiar el código fuente del microservicio worker
 COPY . /app/worker

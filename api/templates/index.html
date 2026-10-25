@@ -1,0 +1,793 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Botillería IA - Ingesta y Homologación de Facturas AWS</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              50: '#f0fdf4',
+              100: '#dcfce7',
+              500: '#22c55e',
+              600: '#16a34a',
+              700: '#15803d',
+              900: '#14532d',
+            }
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    .terminal-scroll::-webkit-scrollbar { width: 6px; }
+    .terminal-scroll::-webkit-scrollbar-track { background: #111827; }
+    .terminal-scroll::-webkit-scrollbar-thumb { background: #374151; border-radius: 3px; }
+    .terminal-scroll::-webkit-scrollbar-thumb:hover { background: #4b5563; }
+  </style>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen flex flex-col font-sans">
+
+  <!-- NAVBAR -->
+  <header class="bg-slate-800 border-b border-slate-700 sticky top-0 z-40 shadow-lg">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+      <div class="flex items-center space-x-3">
+        <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-brand-600 to-emerald-400 flex items-center justify-center text-white shadow-md shadow-emerald-900/40">
+          <i class="fa-solid fa-wine-bottle text-lg"></i>
+        </div>
+        <div>
+          <h1 class="text-lg font-bold tracking-tight text-white flex items-center gap-2">
+            Botillería <span class="text-brand-500">AWS</span> Agent
+            <span class="text-xs px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-medium">v2.1</span>
+          </h1>
+          <p class="text-xs text-slate-400">FastAPI + LangGraph + DynamoDB Vector + SQS</p>
+        </div>
+      </div>
+
+      <nav class="flex items-center space-x-2">
+        <a href="/" class="px-3 py-2 rounded-lg bg-slate-700 text-white font-medium text-sm flex items-center gap-2 shadow-sm border border-slate-600">
+          <i class="fa-solid fa-file-invoice text-brand-400"></i>
+          <span>Procesar Facturas</span>
+        </a>
+        <a href="/tablas" class="px-3 py-2 rounded-lg text-slate-300 hover:text-white hover:bg-slate-700/60 font-medium text-sm flex items-center gap-2 transition">
+          <i class="fa-solid fa-database text-blue-400"></i>
+          <span>Inventario & Historial</span>
+        </a>
+      </nav>
+    </div>
+  </header>
+
+  <!-- CONTENIDO PRINCIPAL -->
+  <main class="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8 space-y-6">
+
+    <!-- BARRA DE ESTADO DEL SISTEMA -->
+    <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <div class="bg-slate-800/80 border border-slate-700 rounded-xl p-4 flex items-center space-x-3">
+        <div class="w-10 h-10 rounded-lg bg-emerald-500/10 text-emerald-400 flex items-center justify-center text-lg">
+          <i class="fa-solid fa-server"></i>
+        </div>
+        <div>
+          <div class="text-xs text-slate-400">Microservicio API</div>
+          <div class="text-sm font-semibold text-emerald-400 flex items-center gap-1.5">
+            <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span> Activo (Puerto 8000)
+          </div>
+        </div>
+      </div>
+
+      <div class="bg-slate-800/80 border border-slate-700 rounded-xl p-4 flex items-center space-x-3">
+        <div class="w-10 h-10 rounded-lg bg-blue-500/10 text-blue-400 flex items-center justify-center text-lg">
+          <i class="fa-brands fa-aws"></i>
+        </div>
+        <div>
+          <div class="text-xs text-slate-400">Cola AWS SQS</div>
+          <div class="text-sm font-semibold text-blue-400 flex items-center gap-1.5">
+            <span class="w-2 h-2 rounded-full bg-blue-500"></span> Conectado (Long Polling)
+          </div>
+        </div>
+      </div>
+
+      <div class="bg-slate-800/80 border border-slate-700 rounded-xl p-4 flex items-center space-x-3">
+        <div class="w-10 h-10 rounded-lg bg-purple-500/10 text-purple-400 flex items-center justify-center text-lg">
+          <i class="fa-solid fa-brain"></i>
+        </div>
+        <div>
+          <div class="text-xs text-slate-400">Índice Vectorial DynamoDB</div>
+          <div class="text-sm font-semibold text-purple-400 flex items-center gap-1.5">
+            <span class="w-2 h-2 rounded-full bg-purple-500"></span> 384 Dim (Cosine Active)
+          </div>
+        </div>
+      </div>
+
+      <div class="bg-slate-800/80 border border-slate-700 rounded-xl p-4 flex items-center space-x-3">
+        <div class="w-10 h-10 rounded-lg bg-amber-500/10 text-amber-400 flex items-center justify-center text-lg">
+          <i class="fa-solid fa-user-check"></i>
+        </div>
+        <div>
+          <div class="text-xs text-slate-400">Human-in-the-Loop</div>
+          <div class="text-sm font-semibold text-amber-400" id="stat-hitl-status">
+            Esperando eventos
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- BANNER DE FACTURAS PENDIENTES DE REVISIÓN -->
+    <div id="banner-pendientes" class="hidden bg-amber-500/10 border border-amber-500/40 rounded-2xl p-4 flex items-center justify-between shadow-xl">
+      <div class="flex items-center space-x-3">
+        <div class="w-10 h-10 rounded-xl bg-amber-500/20 text-amber-400 flex items-center justify-center text-lg">
+          <i class="fa-solid fa-triangle-exclamation"></i>
+        </div>
+        <div>
+          <div class="text-sm font-bold text-amber-300" id="banner-pendientes-titulo">Facturas con productos esperando revisión humana</div>
+          <div class="text-xs text-slate-400" id="banner-pendientes-texto">Existen productos no homologados automáticamente. Haz clic para resolverlos y sumar su stock.</div>
+        </div>
+      </div>
+      <button id="btn-banner-resolver" class="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-900 font-bold text-xs shadow-lg shadow-amber-900/30 transition flex items-center gap-2">
+        <i class="fa-solid fa-user-pen"></i>
+        <span>Resolver Pendientes</span>
+      </button>
+    </div>
+
+    <!-- ÁREA DE TRABAJO PRINCIPAL: 2 COLUMNAS -->
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+
+      <!-- COLUMNA IZQUIERDA: CARGA Y PREVISUALIZACIÓN (5 cols) -->
+      <section class="lg:col-span-5 space-y-6">
+        
+        <!-- DROPZONE CARGA -->
+        <div class="bg-slate-800 border border-slate-700 rounded-2xl p-6 shadow-xl">
+          <h2 class="text-base font-semibold text-white mb-2 flex items-center gap-2">
+            <i class="fa-solid fa-cloud-arrow-up text-brand-400"></i>
+            Ingesta de Factura de Proveedor
+          </h2>
+          <p class="text-xs text-slate-400 mb-4">
+            Arrastra una imagen (PNG, JPG, JPEG) o selecciónala para procesar con IA.
+          </p>
+
+          <form id="upload-form" class="space-y-4">
+            <div id="dropzone" class="border-2 border-dashed border-slate-600 hover:border-brand-500 rounded-xl p-6 text-center cursor-pointer transition bg-slate-900/50 hover:bg-slate-900/80">
+              <input type="file" id="file-input" accept="image/*" class="hidden">
+              <div class="space-y-2">
+                <i class="fa-solid fa-receipt text-3xl text-slate-400"></i>
+                <div class="text-sm font-medium text-slate-200" id="file-label">
+                  Arrastra tu factura aquí o <span class="text-brand-400 underline">examina tus archivos</span>
+                </div>
+                <div class="text-xs text-slate-500">Formatos soportados: PNG, JPG, JPEG (máx 15MB)</div>
+              </div>
+            </div>
+
+            <!-- PREVISUALIZACIÓN -->
+            <div id="preview-container" class="hidden space-y-3">
+              <div class="flex items-center justify-between text-xs text-slate-400 px-1">
+                <span id="preview-filename" class="font-medium truncate max-w-[200px]">archivo.png</span>
+                <span id="preview-filesize">0 KB</span>
+              </div>
+              <div class="relative rounded-lg overflow-hidden border border-slate-700 bg-black/40 max-h-64 flex items-center justify-center">
+                <img id="image-preview" src="" alt="Previsualización" class="max-h-64 object-contain w-full">
+              </div>
+            </div>
+
+            <button type="submit" id="btn-submit" disabled
+              class="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-brand-600 to-emerald-600 hover:from-brand-500 hover:to-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed font-semibold text-sm text-white shadow-lg shadow-emerald-900/20 transition flex items-center justify-center gap-2">
+              <i class="fa-solid fa-robot"></i>
+              <span>Procesar con Agente IA</span>
+            </button>
+          </form>
+        </div>
+
+        <!-- TARJETA DE RESUMEN DE LA FACTURA DETECTADA -->
+        <div id="card-factura-info" class="hidden bg-slate-800 border border-slate-700 rounded-2xl p-6 shadow-xl space-y-4">
+          <h3 class="text-sm font-semibold text-white flex items-center justify-between">
+            <span class="flex items-center gap-2">
+              <i class="fa-solid fa-clipboard-check text-blue-400"></i>
+              Resumen de Extracción
+            </span>
+            <span id="badge-estado" class="text-xs px-2.5 py-1 rounded-full bg-slate-700 text-slate-300 font-medium">
+              PENDIENTE
+            </span>
+          </h3>
+
+          <div class="grid grid-cols-2 gap-3 text-xs">
+            <div class="bg-slate-900/60 p-3 rounded-lg border border-slate-700/50">
+              <span class="text-slate-400 block mb-0.5">Proveedor:</span>
+              <span id="info-proveedor" class="font-semibold text-slate-200">En análisis...</span>
+            </div>
+            <div class="bg-slate-900/60 p-3 rounded-lg border border-slate-700/50">
+              <span class="text-slate-400 block mb-0.5">Folio Factura:</span>
+              <span id="info-folio" class="font-semibold text-slate-200">En análisis...</span>
+            </div>
+            <div class="bg-slate-900/60 p-3 rounded-lg border border-slate-700/50">
+              <span class="text-slate-400 block mb-0.5">Ítems Detectados:</span>
+              <span id="info-items-count" class="font-semibold text-slate-200">0</span>
+            </div>
+            <div class="bg-slate-900/60 p-3 rounded-lg border border-slate-700/50">
+              <span class="text-slate-400 block mb-0.5">ID Seguimiento:</span>
+              <span id="info-factura-id" class="font-mono text-slate-400 text-[10px] truncate block">--</span>
+            </div>
+          </div>
+        </div>
+
+      </section>
+
+      <!-- COLUMNA DERECHA: CONSOLA DE LOGS EN TIEMPO REAL (7 cols) -->
+      <section class="lg:col-span-7 flex flex-col h-full min-h-[550px]">
+        <div class="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl flex-1 flex flex-col overflow-hidden">
+          
+          <!-- CABECERA DE LA CONSOLA -->
+          <div class="bg-slate-800/90 px-4 py-3 border-b border-slate-700 flex items-center justify-between">
+            <div class="flex items-center space-x-2">
+              <span class="w-3 h-3 rounded-full bg-red-500/80 inline-block"></span>
+              <span class="w-3 h-3 rounded-full bg-yellow-500/80 inline-block"></span>
+              <span class="w-3 h-3 rounded-full bg-green-500/80 inline-block"></span>
+              <span class="text-xs font-mono font-medium text-slate-300 ml-2 flex items-center gap-2">
+                <i class="fa-solid fa-terminal text-brand-400"></i>
+                Bitácora de Ejecución Agéntica (CloudWatch Live)
+              </span>
+            </div>
+            <div class="flex items-center space-x-3 text-xs">
+              <span id="terminal-clock" class="font-mono text-slate-400">--:--:--</span>
+              <button id="btn-clear-logs" class="text-slate-400 hover:text-slate-200 transition" title="Limpiar terminal">
+                <i class="fa-solid fa-eraser"></i>
+              </button>
+            </div>
+          </div>
+
+          <!-- ÁREA DE LOGS -->
+          <div id="terminal-body" class="p-4 font-mono text-xs flex-1 overflow-y-auto space-y-1.5 terminal-scroll bg-slate-950 text-slate-300">
+            <div class="text-slate-500">// Esperando envío de factura para iniciar pipeline de eventos...</div>
+            <div class="text-slate-600">// Microservicio Worker conectado a SQS: botilleria-facturas-queue</div>
+          </div>
+
+          <!-- PIE DE LA CONSOLA -->
+          <div class="bg-slate-900 px-4 py-2 border-t border-slate-800 flex items-center justify-between text-[11px] text-slate-400">
+            <div class="flex items-center gap-2">
+              <span id="spinner-status" class="hidden w-2 h-2 rounded-full bg-brand-400 animate-ping"></span>
+              <span id="text-pipeline-status">Listo para procesar</span>
+            </div>
+            <div class="text-slate-500">Auto-scroll activo</div>
+          </div>
+
+        </div>
+      </section>
+
+    </div>
+
+  </main>
+
+  <!-- ======================================================================== -->
+  <!-- MODAL HUMAN-IN-THE-LOOP (HITL) -->
+  <!-- ======================================================================== -->
+  <div id="modal-hitl" class="fixed inset-0 z-50 hidden bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+    <div class="bg-slate-800 border border-amber-500/50 rounded-2xl shadow-2xl max-w-xl w-full p-6 space-y-5 animate-in fade-in zoom-in-95 duration-200">
+      
+      <!-- CABECERA MODAL -->
+      <div class="flex items-start justify-between border-b border-slate-700 pb-4">
+        <div class="flex items-center space-x-3">
+          <div class="w-10 h-10 rounded-xl bg-amber-500/20 text-amber-400 flex items-center justify-center text-lg">
+            <i class="fa-solid fa-triangle-exclamation"></i>
+          </div>
+          <div>
+            <div class="flex items-center gap-2">
+              <h3 class="text-base font-bold text-white">Revisión Humana Requerida (HITL)</h3>
+              <span id="hitl-badge-progreso" class="text-[11px] px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 font-bold border border-amber-500/30">1 pendiente</span>
+            </div>
+            <p class="text-xs text-slate-400">La IA detectó diferencias o un ítem no presente en el catálogo</p>
+          </div>
+        </div>
+        <button type="button" id="btn-cerrar-modal-hitl" class="text-slate-400 hover:text-white transition">
+          <i class="fa-solid fa-xmark text-lg"></i>
+        </button>
+      </div>
+
+      <!-- DETALLE DEL ÍTEM DETECTADO -->
+      <div class="bg-slate-900/80 rounded-xl p-4 border border-slate-700/60 space-y-2">
+        <div class="text-xs font-semibold text-amber-400 flex items-center gap-1.5 uppercase tracking-wide">
+          <i class="fa-solid fa-magnifying-glass"></i> Glosa Facturada
+        </div>
+        <div id="hitl-glosa" class="text-sm font-bold text-white">ALTO DEL CARMEN 35g 1000cc</div>
+        <div class="grid grid-cols-3 gap-2 pt-2 text-xs text-slate-300">
+          <div><span class="text-slate-500 block">Formato:</span> <span id="hitl-formato" class="font-medium text-slate-200">1000cc</span></div>
+          <div><span class="text-slate-500 block">Cantidad:</span> <span id="hitl-cantidad" class="font-medium text-slate-200">420</span></div>
+          <div><span class="text-slate-500 block">Costo Factura:</span> <span id="hitl-costo" class="font-medium text-emerald-400">$2.425</span></div>
+        </div>
+      </div>
+
+      <!-- FORMULARIO DE DECISIÓN -->
+      <form id="form-hitl-resolver" class="space-y-4">
+        <div>
+          <label class="block text-xs font-medium text-slate-300 mb-2">Selecciona la acción a tomar:</label>
+          <div class="grid grid-cols-3 gap-2">
+            <button type="button" id="btn-hitl-opcion-crear" class="hitl-opcion active py-2.5 px-3 rounded-lg border text-xs font-medium text-center transition bg-emerald-500/10 border-emerald-500 text-emerald-300">
+              <i class="fa-solid fa-plus-circle block text-base mb-1"></i>
+              Crear Nuevo
+            </button>
+            <button type="button" id="btn-hitl-opcion-asociar" class="hitl-opcion py-2.5 px-3 rounded-lg border text-xs font-medium text-center transition border-slate-700 text-slate-400 hover:border-slate-600">
+              <i class="fa-solid fa-link block text-base mb-1"></i>
+              Asociar Existente
+            </button>
+            <button type="button" id="btn-hitl-opcion-omitir" class="hitl-opcion py-2.5 px-3 rounded-lg border text-xs font-medium text-center transition border-slate-700 text-slate-400 hover:border-slate-600">
+              <i class="fa-solid fa-ban block text-base mb-1"></i>
+              Omitir Ítem
+            </button>
+          </div>
+        </div>
+
+        <!-- CAMPOS PARA CREAR NUEVO PRODUCTO -->
+        <div id="seccion-crear-nuevo" class="space-y-3 bg-slate-900/50 p-4 rounded-xl border border-slate-700/40">
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="block text-[11px] text-slate-400 mb-1">SKU Asignado:</label>
+              <input type="text" id="hitl-input-sku" class="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-1.5 text-xs text-white uppercase focus:ring-1 focus:ring-emerald-500">
+            </div>
+            <div>
+              <label class="block text-[11px] text-slate-400 mb-1">Nombre Comercial:</label>
+              <input type="text" id="hitl-input-nombre" class="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-1.5 text-xs text-white focus:ring-1 focus:ring-emerald-500">
+            </div>
+          </div>
+
+          <div class="grid grid-cols-3 gap-2">
+            <div>
+              <label class="block text-[11px] text-slate-400 mb-1">Marca:</label>
+              <input type="text" id="hitl-input-marca" class="w-full bg-slate-800 border border-slate-600 rounded-lg px-2.5 py-1.5 text-xs text-white">
+            </div>
+            <div>
+              <label class="block text-[11px] text-slate-400 mb-1">Categoría:</label>
+              <input type="text" id="hitl-input-categoria" value="Destilados" class="w-full bg-slate-800 border border-slate-600 rounded-lg px-2.5 py-1.5 text-xs text-white">
+            </div>
+            <div>
+              <label class="block text-[11px] text-slate-400 mb-1">Formato:</label>
+              <input type="text" id="hitl-input-formato" class="w-full bg-slate-800 border border-slate-600 rounded-lg px-2.5 py-1.5 text-xs text-white">
+            </div>
+          </div>
+
+          <div class="grid grid-cols-2 gap-3 pt-1">
+            <div>
+              <label class="block text-[11px] text-slate-400 mb-1">Costo Unitario ($):</label>
+              <input type="number" step="0.01" id="hitl-input-costo" class="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-1.5 text-xs text-white">
+            </div>
+            <div>
+              <label class="block text-[11px] text-slate-400 mb-1">Precio de Venta Sugerido ($):</label>
+              <input type="number" step="0.01" id="hitl-input-venta" class="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-1.5 text-xs text-emerald-400 font-semibold">
+            </div>
+          </div>
+        </div>
+
+        <!-- SECCIÓN ASOCIAR A SKU EXISTENTE -->
+        <div id="seccion-asociar-existente" class="hidden space-y-3 bg-slate-900/50 p-4 rounded-xl border border-slate-700/40">
+          <label class="block text-xs text-slate-400">Selecciona el producto del catálogo para actualizar su stock:</label>
+          <select id="hitl-select-sku" class="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-xs text-white">
+            <option value="">Cargando catálogo...</option>
+          </select>
+        </div>
+
+        <!-- BOTÓN DE CONFIRMACIÓN -->
+        <div class="flex items-center justify-end space-x-3 pt-2">
+          <button type="submit" id="btn-hitl-confirmar" class="w-full py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs shadow-lg transition flex items-center justify-center gap-2">
+            <i class="fa-solid fa-check"></i>
+            <span id="hitl-btn-text">Confirmar y Aplicar al Inventario</span>
+          </button>
+        </div>
+      </form>
+
+    </div>
+  </div>
+
+  <!-- JAVASCRIPT DE LA PÁGINA -->
+  <script>
+    // Variables de Estado
+    let archivoSeleccionado = null;
+    let facturaActivaId = null;
+    let intervaloPolling = null;
+    let accionSeleccionada = "CREAR_NUEVO";
+    let itemRevisionActual = null;
+    let listaRevisionPendiente = [];
+    let catalogoProductos = [];
+
+    // Referencias DOM
+    const dropzone = document.getElementById("dropzone");
+    const fileInput = document.getElementById("file-input");
+    const previewContainer = document.getElementById("preview-container");
+    const imagePreview = document.getElementById("image-preview");
+    const previewFilename = document.getElementById("preview-filename");
+    const previewFilesize = document.getElementById("preview-filesize");
+    const btnSubmit = document.getElementById("btn-submit");
+    const terminalBody = document.getElementById("terminal-body");
+    const terminalClock = document.getElementById("terminal-clock");
+    const textPipelineStatus = document.getElementById("text-pipeline-status");
+    const spinnerStatus = document.getElementById("spinner-status");
+
+    // Modal HITL DOM
+    const modalHitl = document.getElementById("modal-hitl");
+    const hitlBadgeProgreso = document.getElementById("hitl-badge-progreso");
+    const btnCerrarModalHitl = document.getElementById("btn-cerrar-modal-hitl");
+    const hitlGlosa = document.getElementById("hitl-glosa");
+    const hitlFormato = document.getElementById("hitl-formato");
+    const hitlCantidad = document.getElementById("hitl-cantidad");
+    const hitlCosto = document.getElementById("hitl-costo");
+    const btnHitlCrear = document.getElementById("btn-hitl-opcion-crear");
+    const btnHitlAsociar = document.getElementById("btn-hitl-opcion-asociar");
+    const btnHitlOmitir = document.getElementById("btn-hitl-opcion-omitir");
+    const seccionCrear = document.getElementById("seccion-crear-nuevo");
+    const seccionAsociar = document.getElementById("seccion-asociar-existente");
+    const hitlInputSku = document.getElementById("hitl-input-sku");
+    const hitlInputNombre = document.getElementById("hitl-input-nombre");
+    const hitlInputMarca = document.getElementById("hitl-input-marca");
+    const hitlInputCategoria = document.getElementById("hitl-input-categoria");
+    const hitlInputFormato = document.getElementById("hitl-input-formato");
+    const hitlInputCosto = document.getElementById("hitl-input-costo");
+    const hitlInputVenta = document.getElementById("hitl-input-venta");
+    const hitlSelectSku = document.getElementById("hitl-select-sku");
+
+    // Banner de pendientes
+    const bannerPendientes = document.getElementById("banner-pendientes");
+    const btnBannerResolver = document.getElementById("btn-banner-resolver");
+    let primerFacturaPendienteId = null;
+
+    // Reloj en tiempo real
+    setInterval(() => {
+      const d = new Date();
+      terminalClock.innerText = d.toTimeString().split(' ')[0];
+    }, 1000);
+
+    // Cargar Catálogo para el selector HITL
+    async function cargarCatalogo() {
+      try {
+        const res = await fetch("/api/tablas/productos");
+        const data = await res.json();
+        catalogoProductos = data.productos || [];
+        hitlSelectSku.innerHTML = catalogoProductos.map(p => 
+          `<option value="${p.sku}">${p.sku} - ${p.nombre} (${p.formato}) [Stock: ${p.stock_actual}]</option>`
+        ).join("");
+      } catch (e) {
+        console.error("Error al precargar catálogo:", e);
+      }
+    }
+    cargarCatalogo();
+
+    // Comprobar si hay facturas con revisiones pendientes al cargar la página
+    async function verificarFacturasPendientesGlobal() {
+      try {
+        const res = await fetch("/api/tablas/historial");
+        if (!res.ok) return;
+        const data = await res.json();
+        const pendientes = (data.historial || []).filter(h => 
+          h.estado === "REQUIERE_REVISION_MANUAL" || (h.pendientes_count && h.pendientes_count > 0)
+        );
+
+        if (pendientes.length > 0) {
+          primerFacturaPendienteId = pendientes[0].id;
+          bannerPendientes.classList.remove("hidden");
+          document.getElementById("banner-pendientes-titulo").innerText = 
+            `¡Atención! Tienes ${pendientes.length} factura(s) esperando revisión humana`;
+          document.getElementById("banner-pendientes-texto").innerText = 
+            `La factura folio '${pendientes[0].folio || "S/F"}' (${pendientes[0].proveedor || "Proveedor"}) tiene ${pendientes[0].pendientes_count || 1} producto(s) por homologar.`;
+          document.getElementById("stat-hitl-status").innerHTML = 
+            `<span class="text-amber-400 font-bold animate-pulse">${pendientes.length} en espera</span>`;
+        } else {
+          bannerPendientes.classList.add("hidden");
+          document.getElementById("stat-hitl-status").innerText = "Sin pendientes";
+        }
+      } catch (e) {
+        console.error("Error al verificar pendientes:", e);
+      }
+    }
+    verificarFacturasPendientesGlobal();
+
+    btnBannerResolver.addEventListener("click", () => {
+      if (primerFacturaPendienteId) {
+        facturaActivaId = primerFacturaPendienteId;
+        cargarYMostrarRevision(primerFacturaPendienteId);
+      }
+    });
+
+    async function cargarYMostrarRevision(facturaId) {
+      try {
+        const res = await fetch(`/api/facturas/${facturaId}/estado`);
+        if (!res.ok) return;
+        const data = await res.json();
+        actualizarInfoFactura(data);
+        document.getElementById("card-factura-info").classList.remove("hidden");
+        document.getElementById("info-factura-id").innerText = facturaId;
+
+        listaRevisionPendiente = data.items_revision || [];
+        if (listaRevisionPendiente.length > 0) {
+          abrirModalHitl(listaRevisionPendiente[0], listaRevisionPendiente.length);
+        }
+      } catch (e) {
+        console.error("Error cargando revisión:", e);
+      }
+    }
+
+    // Eventos Dropzone
+    dropzone.addEventListener("click", () => fileInput.click());
+    dropzone.addEventListener("dragover", (e) => { e.preventDefault(); dropzone.classList.add("border-brand-500"); });
+    dropzone.addEventListener("dragleave", () => dropzone.classList.remove("border-brand-500"));
+    dropzone.addEventListener("drop", (e) => {
+      e.preventDefault();
+      dropzone.classList.remove("border-brand-500");
+      if (e.dataTransfer.files.length) procesarArchivoSeleccionado(e.dataTransfer.files[0]);
+    });
+    fileInput.addEventListener("change", (e) => {
+      if (e.target.files.length) procesarArchivoSeleccionado(e.target.files[0]);
+    });
+
+    function procesarArchivoSeleccionado(file) {
+      if (!file.type.startsWith("image/")) {
+        alert("Por favor selecciona un archivo de imagen válido (PNG, JPG, JPEG).");
+        return;
+      }
+      archivoSeleccionado = file;
+      previewFilename.innerText = file.name;
+      previewFilesize.innerText = (file.size / 1024).toFixed(1) + " KB";
+      
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        imagePreview.src = e.target.result;
+        previewContainer.classList.remove("hidden");
+        btnSubmit.removeAttribute("disabled");
+      };
+      reader.readAsDataURL(file);
+    }
+
+    // Limpiar terminal
+    document.getElementById("btn-clear-logs").addEventListener("click", () => {
+      terminalBody.innerHTML = `<div class="text-slate-500">// Terminal limpia. Esperando eventos...</div>`;
+    });
+
+    // Enviar Factura a la API
+    document.getElementById("upload-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      if (!archivoSeleccionado) return;
+
+      btnSubmit.setAttribute("disabled", "true");
+      btnSubmit.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i><span>Subiendo factura...</span>`;
+      spinnerStatus.classList.remove("hidden");
+      textPipelineStatus.innerText = "Encolando en AWS SQS...";
+
+      agregarLog("INFO", `Subiendo factura '${archivoSeleccionado.name}' a la API de Ingesta...`);
+
+      const formData = new FormData();
+      formData.append("file", archivoSeleccionado);
+
+      try {
+        const response = await fetch("/facturas/upload", {
+          method: "POST",
+          body: formData
+        });
+
+        if (!response.ok) throw new Error("Error en la subida: HTTP " + response.status);
+
+        const data = await response.json();
+        facturaActivaId = data.factura_id;
+
+        agregarLog("SUCCESS", `Factura ACEPTADA por la API. ID de Seguimiento: ${facturaActivaId}`);
+        agregarLog("AWS", `Evento publicado en SQS. Iniciando sondeo del Worker LangGraph...`);
+
+        document.getElementById("card-factura-info").classList.remove("hidden");
+        document.getElementById("info-factura-id").innerText = facturaActivaId;
+
+        iniciarPollingLogs();
+
+      } catch (err) {
+        agregarLog("ERROR", `Fallo en el envío: ${err.message}`);
+        btnSubmit.removeAttribute("disabled");
+        btnSubmit.innerHTML = `<i class="fa-solid fa-robot"></i><span>Procesar con Agente IA</span>`;
+        spinnerStatus.classList.add("hidden");
+        textPipelineStatus.innerText = "Error en el envío";
+      }
+    });
+
+    // Polling de Logs y Estado
+    function iniciarPollingLogs() {
+      if (intervaloPolling) clearInterval(intervaloPolling);
+
+      intervaloPolling = setInterval(async () => {
+        if (!facturaActivaId) return;
+
+        try {
+          const res = await fetch(`/api/facturas/${facturaActivaId}/estado`);
+          if (!res.ok) return;
+
+          const data = await res.json();
+          renderizarBitacora(data.bitacora || []);
+          actualizarInfoFactura(data);
+
+          listaRevisionPendiente = data.items_revision || [];
+
+          // Si hay ítems requiriendo revisión humana
+          if (listaRevisionPendiente.length > 0) {
+            document.getElementById("stat-hitl-status").innerHTML = 
+              `<span class="text-amber-400 font-bold animate-pulse">¡${listaRevisionPendiente.length} por revisar!</span>`;
+            
+            document.getElementById("badge-estado").className = "text-xs px-2.5 py-1 rounded-full bg-amber-500/20 text-amber-400 font-bold border border-amber-500/30";
+            document.getElementById("badge-estado").innerText = `REQUIERE REVISIÓN (${listaRevisionPendiente.length})`;
+            textPipelineStatus.innerText = `Esperando decisión humana para ${listaRevisionPendiente.length} producto(s)`;
+
+            if (modalHitl.classList.contains("hidden")) {
+              abrirModalHitl(listaRevisionPendiente[0], listaRevisionPendiente.length);
+            }
+          }
+
+          // Si completó o dio error
+          if (data.estado === "COMPLETADO") {
+            clearInterval(intervaloPolling);
+            spinnerStatus.classList.add("hidden");
+            textPipelineStatus.innerText = "Procesamiento finalizado con éxito";
+            document.getElementById("badge-estado").className = "text-xs px-2.5 py-1 rounded-full bg-emerald-500/20 text-emerald-400 font-bold";
+            document.getElementById("badge-estado").innerText = "COMPLETADO";
+            btnSubmit.removeAttribute("disabled");
+            btnSubmit.innerHTML = `<i class="fa-solid fa-check"></i><span>Factura Procesada</span>`;
+            verificarFacturasPendientesGlobal();
+          }
+
+        } catch (e) {
+          console.error("Error en polling:", e);
+        }
+      }, 1500);
+    }
+
+    let logsRenderizadosCount = 0;
+    function renderizarBitacora(logs) {
+      if (logs.length <= logsRenderizadosCount) return;
+
+      for (let i = logsRenderizadosCount; i < logs.length; i++) {
+        const linea = logs[i];
+        let colorClase = "text-slate-300";
+
+        if (linea.includes("[ERROR]") || linea.includes("Error")) colorClase = "text-red-400 font-semibold";
+        else if (linea.includes("[WARNING]") || linea.includes("Revisión") || linea.includes("HITL")) colorClase = "text-amber-300 font-medium";
+        else if (linea.includes("DynamoDB") || linea.includes("VectorIndex")) colorClase = "text-purple-300";
+        else if (linea.includes("Gemini") || linea.includes("extraída")) colorClase = "text-blue-300";
+        else if (linea.includes("éxito") || linea.includes("COMPLETADO")) colorClase = "text-emerald-400 font-semibold";
+
+        const div = document.createElement("div");
+        div.className = `leading-relaxed ${colorClase}`;
+        div.innerText = linea;
+        terminalBody.appendChild(div);
+      }
+
+      logsRenderizadosCount = logs.length;
+      terminalBody.scrollTop = terminalBody.scrollHeight;
+    }
+
+    function agregarLog(tipo, mensaje) {
+      const hora = new Date().toTimeString().split(' ')[0];
+      const div = document.createElement("div");
+      div.className = tipo === "ERROR" ? "text-red-400" : tipo === "SUCCESS" ? "text-emerald-400" : "text-slate-300";
+      div.innerText = `[${hora}] [${tipo}] ${mensaje}`;
+      terminalBody.appendChild(div);
+      terminalBody.scrollTop = terminalBody.scrollHeight;
+    }
+
+    function actualizarInfoFactura(data) {
+      if (data.proveedor && data.proveedor !== "PENDIENTE_EXTRACCION") {
+        document.getElementById("info-proveedor").innerText = data.proveedor;
+      }
+      if (data.folio && data.folio !== "PENDIENTE_EXTRACCION") {
+        document.getElementById("info-folio").innerText = data.folio;
+      }
+      document.getElementById("info-items-count").innerText = data.total_items || data.items?.length || 0;
+      if (data.estado) {
+        document.getElementById("badge-estado").innerText = data.estado;
+      }
+    }
+
+    // Modal HITL
+    function abrirModalHitl(item, totalPendientes = 1) {
+      itemRevisionActual = item;
+      hitlBadgeProgreso.innerText = `${totalPendientes} pendiente(s)`;
+      hitlGlosa.innerText = item.glosa_original || "Producto sin glosa";
+      hitlFormato.innerText = item.formato || "No especificado";
+      hitlCantidad.innerText = item.cantidad || 1;
+      hitlCosto.innerText = "$" + Number(item.precio_unitario || 0).toLocaleString("es-CL");
+
+      // Sugerencias automáticas
+      const palabras = (item.glosa_original || "").split(" ");
+      const marcaSugerida = palabras[0] || "General";
+      const skuSugerido = (item.glosa_original || "SKU-NUEVO").replace(/[^a-zA-Z0-9]/g, "-").toUpperCase().substring(0, 15);
+      
+      hitlInputSku.value = skuSugerido;
+      hitlInputNombre.value = item.glosa_original || "";
+      hitlInputMarca.value = marcaSugerida;
+      hitlInputFormato.value = item.formato || "Unidad";
+      hitlInputCosto.value = item.precio_unitario || 0;
+      hitlInputVenta.value = Math.round((item.precio_unitario || 1000) * 1.4);
+
+      setOpcionHitl("CREAR_NUEVO");
+      modalHitl.classList.remove("hidden");
+    }
+
+    btnCerrarModalHitl.addEventListener("click", () => {
+      modalHitl.classList.add("hidden");
+    });
+
+    // Cambio de Opciones en Modal
+    function setOpcionHitl(opcion) {
+      accionSeleccionada = opcion;
+      [btnHitlCrear, btnHitlAsociar, btnHitlOmitir].forEach(b => {
+        b.className = "hitl-opcion py-2.5 px-3 rounded-lg border text-xs font-medium text-center transition border-slate-700 text-slate-400 hover:border-slate-600";
+      });
+
+      if (opcion === "CREAR_NUEVO") {
+        btnHitlCrear.className = "hitl-opcion py-2.5 px-3 rounded-lg border text-xs font-medium text-center transition bg-emerald-500/10 border-emerald-500 text-emerald-300";
+        seccionCrear.classList.remove("hidden");
+        seccionAsociar.classList.add("hidden");
+        document.getElementById("hitl-btn-text").innerText = "Crear e Ingresar al Inventario";
+      } else if (opcion === "ASOCIAR_EXISTENTE") {
+        btnHitlAsociar.className = "hitl-opcion py-2.5 px-3 rounded-lg border text-xs font-medium text-center transition bg-blue-500/10 border-blue-500 text-blue-300";
+        seccionCrear.classList.add("hidden");
+        seccionAsociar.classList.remove("hidden");
+        document.getElementById("hitl-btn-text").innerText = "Vincular y Sumar al Stock";
+      } else {
+        btnHitlOmitir.className = "hitl-opcion py-2.5 px-3 rounded-lg border text-xs font-medium text-center transition bg-red-500/10 border-red-500 text-red-300";
+        seccionCrear.classList.add("hidden");
+        seccionAsociar.classList.add("hidden");
+        document.getElementById("hitl-btn-text").innerText = "Omitir Ítem de la Factura";
+      }
+    }
+
+    btnHitlCrear.addEventListener("click", () => setOpcionHitl("CREAR_NUEVO"));
+    btnHitlAsociar.addEventListener("click", () => setOpcionHitl("ASOCIAR_EXISTENTE"));
+    btnHitlOmitir.addEventListener("click", () => setOpcionHitl("OMITIR"));
+
+    // Enviar Resolución HITL
+    document.getElementById("form-hitl-resolver").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      if (!facturaActivaId || !itemRevisionActual) return;
+
+      const payload = {
+        glosa_original: itemRevisionActual.glosa_original,
+        accion: accionSeleccionada,
+        cantidad: itemRevisionActual.cantidad || 1,
+        precio_costo: parseFloat(hitlInputCosto.value) || 0,
+        sku: accionSeleccionada === "ASOCIAR_EXISTENTE" ? hitlSelectSku.value : hitlInputSku.value,
+        nombre: hitlInputNombre.value,
+        marca: hitlInputMarca.value,
+        categoria: hitlInputCategoria.value,
+        subcategoria: "General",
+        formato: hitlInputFormato.value,
+        precio_venta: parseFloat(hitlInputVenta.value) || 0
+      };
+
+      try {
+        agregarLog("HITL", `Enviando resolución para '${payload.glosa_original}' (${accionSeleccionada})...`);
+        const res = await fetch(`/api/facturas/${facturaActivaId}/resolver-item`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+
+        if (!res.ok) throw new Error("Error enviando resolución");
+        
+        modalHitl.classList.add("hidden");
+        agregarLog("SUCCESS", `Resolución para '${payload.glosa_original}' aplicada.`);
+
+        // Comprobar si quedan más ítems en esta factura
+        const resEstado = await fetch(`/api/facturas/${facturaActivaId}/estado`);
+        if (resEstado.ok) {
+          const dataEstado = await resEstado.json();
+          listaRevisionPendiente = dataEstado.items_revision || [];
+          if (listaRevisionPendiente.length > 0) {
+            // Abrir el siguiente ítem de inmediato
+            setTimeout(() => {
+              abrirModalHitl(listaRevisionPendiente[0], listaRevisionPendiente.length);
+            }, 300);
+          } else {
+            document.getElementById("stat-hitl-status").innerText = "Resuelto";
+            verificarFacturasPendientesGlobal();
+          }
+        }
+
+      } catch (err) {
+        alert("Error al aplicar la resolución: " + err.message);
+      }
+    });
+
+  </script>
+</body>
+</html>

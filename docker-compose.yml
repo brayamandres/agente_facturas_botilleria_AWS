@@ -35,6 +35,9 @@ services:
       - .env
     environment:
       - PYTHONUNBUFFERED=1
+      - HF_HOME=/models
+    volumes:
+      - hf_cache:/models
     restart: unless-stopped
     depends_on:
       api:
@@ -42,4 +45,7 @@ services:
     # Para escalar horizontalmente con múltiples réplicas desatendidas:
     # deploy:
     #   replicas: 2
+
+volumes:
+  hf_cache:
 

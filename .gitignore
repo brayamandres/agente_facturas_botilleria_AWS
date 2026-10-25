@@ -2,7 +2,7 @@
 .env
 env.txt
 *.json
-!src/services/seed_data.json
+!worker/src/services/seed_data.json
 
 # Entornos virtuales de Python
 venv/
@@ -29,6 +29,7 @@ Thumbs.db
 optimizado/
 
 # Ignora imagenes agregadas, menos la factura1.png
-!factura1.png
 *.png
 *.jpg
+!factura1.png
+!data/factura1.png

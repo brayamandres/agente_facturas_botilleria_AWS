@@ -85,15 +85,17 @@ def extraer_datos_factura(ruta_imagen):
                 model=modelo,
                 contents=[PROMPT_EXTRACCION, imagen],
                 config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    automatic_function_calling=types.AutomaticFunctionCallingConfig(
-                        disable=True
-                    )
+                    response_mime_type="application/json"
                 )
             )
             return json.loads(respuesta.text)
         except Exception as e:
-            logger.warning("Aviso en modelo '%s': %s. Probando siguiente modelo...", modelo, str(e))
+            err_msg = str(e)
+            es_transitorio = any(c in err_msg for c in ["503", "429", "UNAVAILABLE", "RESOURCE_EXHAUSTED", "overloaded", "quota"])
+            if es_transitorio:
+                logger.warning("Fallo transitorio en modelo Gemini '%s' (%s). Probando siguiente modelo de respaldo...", modelo, err_msg)
+            else:
+                logger.error("Error definitivo/de configuración en modelo Gemini '%s': %s", modelo, err_msg)
 
     raise RuntimeError("No fue posible extraer los datos de la factura con los modelos de Gemini configurados.")
 

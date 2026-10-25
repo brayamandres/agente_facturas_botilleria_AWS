@@ -134,7 +134,9 @@ def registrar_auditoria_factura(
     items_procesados: List[Dict[str, Any]],
     estado: str = "COMPLETADO",
     ruta_imagen: Optional[str] = None,
-    total_factura: Optional[float] = None
+    total_factura: Optional[float] = None,
+    id_auditoria: Optional[str] = None,
+    bitacora: Optional[List[str]] = None
 ) -> Dict[str, Any]:
     """
     Registra el procesamiento completo de una factura en la tabla 'botilleria-historial-facturas'
@@ -148,13 +150,15 @@ def registrar_auditoria_factura(
         estado (str, optional): Estado final ('COMPLETADO' o 'COMPLETADO_CON_ERRORES').
         ruta_imagen (str | None, optional): Identificador de la imagen o S3 key.
         total_factura (float | None, optional): Monto total de la factura.
+        id_auditoria (str | None, optional): ID único de seguimiento creado en la ingesta.
+        bitacora (list[str] | None, optional): Registro cronológico de ejecución.
         
     Returns:
         dict: Diccionario confirmando el ID único de auditoría registrado.
     """
-    id_auditoria = str(uuid.uuid4())
+    id_final = id_auditoria or str(uuid.uuid4())
     registro = {
-        "id": id_auditoria,
+        "id": id_final,
         "folio": str(folio),
         "proveedor": str(proveedor),
         "total_items": total_items,
@@ -164,14 +168,16 @@ def registrar_auditoria_factura(
         "total_factura": float(total_factura) if total_factura else 0.0,
         "fecha_procesamiento": datetime.now(timezone.utc).isoformat()
     }
+    if bitacora:
+        registro["bitacora"] = bitacora
 
-    logger.info("Guardando auditoría en DynamoDB para factura folio '%s' (ID: %s)...", folio, id_auditoria)
+    logger.info("Guardando auditoría en DynamoDB para factura folio '%s' (ID: %s)...", folio, id_final)
     resultado = guardar_auditoria_factura_dynamo(registro)
 
     if resultado.get("exito"):
         return {
             "exito": True,
-            "id_auditoria": id_auditoria,
+            "id_auditoria": id_final,
             "mensaje": f"Auditoría de factura folio '{folio}' guardada exitosamente en DynamoDB."
         }
     return {

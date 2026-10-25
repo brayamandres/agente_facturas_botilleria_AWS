@@ -1,0 +1,737 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Base de Datos DynamoDB - Inventario e Historial Botillería</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              500: '#22c55e',
+              600: '#16a34a',
+              700: '#15803d',
+            }
+          }
+        }
+      }
+    }
+  </script>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen flex flex-col font-sans">
+
+  <!-- NAVBAR -->
+  <header class="bg-slate-800 border-b border-slate-700 sticky top-0 z-40 shadow-lg">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+      <div class="flex items-center space-x-3">
+        <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-500 flex items-center justify-center text-white shadow-md shadow-blue-900/40">
+          <i class="fa-solid fa-database text-lg"></i>
+        </div>
+        <div>
+          <h1 class="text-lg font-bold tracking-tight text-white flex items-center gap-2">
+            Visor de Base de Datos <span class="text-blue-400">DynamoDB</span>
+          </h1>
+          <p class="text-xs text-slate-400">Catálogo de Productos con Búsqueda Vectorial e Historial de Facturas</p>
+        </div>
+      </div>
+
+      <nav class="flex items-center space-x-2">
+        <a href="/" class="px-3 py-2 rounded-lg text-slate-300 hover:text-white hover:bg-slate-700/60 font-medium text-sm flex items-center gap-2 transition">
+          <i class="fa-solid fa-file-invoice text-brand-400"></i>
+          <span>Procesar Facturas</span>
+        </a>
+        <a href="/tablas" class="px-3 py-2 rounded-lg bg-slate-700 text-white font-medium text-sm flex items-center gap-2 shadow-sm border border-slate-600">
+          <i class="fa-solid fa-database text-blue-400"></i>
+          <span>Inventario & Historial</span>
+        </a>
+      </nav>
+    </div>
+  </header>
+
+  <!-- CONTENIDO PRINCIPAL -->
+  <main class="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8 space-y-6">
+
+    <!-- SELECTOR DE PESTAÑAS (TABS) -->
+    <div class="flex items-center justify-between border-b border-slate-700 pb-3">
+      <div class="flex space-x-3">
+        <button id="tab-btn-productos" class="tab-btn px-4 py-2 rounded-xl text-sm font-semibold flex items-center gap-2 bg-blue-600 text-white shadow-md shadow-blue-900/20">
+          <i class="fa-solid fa-boxes-stacked"></i>
+          <span>Catálogo de Productos (<span id="count-badge-productos">0</span>)</span>
+        </button>
+        <button id="tab-btn-historial" class="tab-btn px-4 py-2 rounded-xl text-sm font-medium text-slate-400 hover:text-white hover:bg-slate-800 transition flex items-center gap-2">
+          <i class="fa-solid fa-receipt"></i>
+          <span>Historial de Facturas (<span id="count-badge-historial">0</span>)</span>
+        </button>
+      </div>
+
+      <button id="btn-refresh" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-600 text-xs font-medium flex items-center gap-1.5 transition">
+        <i class="fa-solid fa-rotate text-xs" id="refresh-icon"></i>
+        <span>Actualizar Datos</span>
+      </button>
+    </div>
+
+    <!-- ==================================================================== -->
+    <!-- SECCIÓN 1: TABLA DE PRODUCTOS -->
+    <!-- ==================================================================== -->
+    <section id="section-productos" class="space-y-4">
+      
+      <!-- TARJETAS DE RESUMEN KPI -->
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div class="bg-slate-800 border border-slate-700 p-4 rounded-xl">
+          <div class="text-xs text-slate-400">Total Productos Registrados</div>
+          <div class="text-2xl font-bold text-white mt-1" id="kpi-total-productos">0</div>
+        </div>
+        <div class="bg-slate-800 border border-slate-700 p-4 rounded-xl">
+          <div class="text-xs text-slate-400">Unidades en Stock Global</div>
+          <div class="text-2xl font-bold text-emerald-400 mt-1" id="kpi-total-unidades">0</div>
+        </div>
+        <div class="bg-slate-800 border border-slate-700 p-4 rounded-xl">
+          <div class="text-xs text-slate-400">Productos Bajo Stock Mínimo</div>
+          <div class="text-2xl font-bold text-amber-400 mt-1" id="kpi-stock-alerta">0</div>
+        </div>
+      </div>
+
+      <!-- BARRA DE BÚSQUEDA Y FILTRO -->
+      <div class="flex flex-col sm:flex-row gap-3">
+        <div class="relative flex-1">
+          <i class="fa-solid fa-magnifying-glass absolute left-3 top-3 text-slate-500 text-xs"></i>
+          <input type="text" id="filtro-productos-texto" placeholder="Buscar por SKU, nombre, marca..."
+            class="w-full bg-slate-800 border border-slate-700 rounded-xl pl-9 pr-4 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500">
+        </div>
+        <select id="filtro-productos-categoria" class="bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-blue-500">
+          <option value="">Todas las categorías</option>
+        </select>
+      </div>
+
+      <!-- TABLA DE PRODUCTOS -->
+      <div class="bg-slate-800 border border-slate-700 rounded-2xl overflow-hidden shadow-xl">
+        <div class="overflow-x-auto">
+          <table class="w-full text-left border-collapse text-xs">
+            <thead class="bg-slate-900/80 text-slate-400 font-semibold uppercase tracking-wider border-b border-slate-700">
+              <tr>
+                <th class="py-3 px-4">SKU</th>
+                <th class="py-3 px-4">Nombre Comercial</th>
+                <th class="py-3 px-4">Marca</th>
+                <th class="py-3 px-4">Categoría</th>
+                <th class="py-3 px-4">Formato</th>
+                <th class="py-3 px-4 text-center">Stock Actual</th>
+                <th class="py-3 px-4 text-right">P. Costo</th>
+                <th class="py-3 px-4 text-right">P. Venta</th>
+                <th class="py-3 px-4 text-center">Margen</th>
+              </tr>
+            </thead>
+            <tbody id="tbody-productos" class="divide-y divide-slate-700/60 text-slate-200">
+              <tr>
+                <td colspan="9" class="py-8 text-center text-slate-500">
+                  <i class="fa-solid fa-spinner fa-spin mr-2"></i> Cargando catálogo desde DynamoDB...
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+    </section>
+
+    <!-- ==================================================================== -->
+    <!-- SECCIÓN 2: HISTORIAL DE FACTURAS -->
+    <!-- ==================================================================== -->
+    <section id="section-historial" class="hidden space-y-4">
+
+      <!-- BARRA DE BÚSQUEDA HISTORIAL -->
+      <div class="relative">
+        <i class="fa-solid fa-magnifying-glass absolute left-3 top-3 text-slate-500 text-xs"></i>
+        <input type="text" id="filtro-historial-texto" placeholder="Buscar por número de folio o nombre del proveedor..."
+          class="w-full bg-slate-800 border border-slate-700 rounded-xl pl-9 pr-4 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500">
+      </div>
+
+      <!-- TABLA DE FACTURAS -->
+      <div class="bg-slate-800 border border-slate-700 rounded-2xl overflow-hidden shadow-xl">
+        <div class="overflow-x-auto">
+          <table class="w-full text-left border-collapse text-xs">
+            <thead class="bg-slate-900/80 text-slate-400 font-semibold uppercase tracking-wider border-b border-slate-700">
+              <tr>
+                <th class="py-3 px-4">Folio Factura</th>
+                <th class="py-3 px-4">Proveedor</th>
+                <th class="py-3 px-4">Fecha Procesamiento</th>
+                <th class="py-3 px-4 text-center">Ítems</th>
+                <th class="py-3 px-4 text-right">Monto Total</th>
+                <th class="py-3 px-4 text-center">Estado Auditoría</th>
+                <th class="py-3 px-4 text-center">Acciones</th>
+              </tr>
+            </thead>
+            <tbody id="tbody-historial" class="divide-y divide-slate-700/60 text-slate-200">
+              <tr>
+                <td colspan="7" class="py-8 text-center text-slate-500">
+                  <i class="fa-solid fa-spinner fa-spin mr-2"></i> Cargando historial desde DynamoDB...
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+    </section>
+
+  </main>
+
+  <!-- ======================================================================== -->
+  <!-- MODAL DE DETALLE DE FACTURA -->
+  <!-- ======================================================================== -->
+  <div id="modal-detalle-factura" class="fixed inset-0 z-50 hidden bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+    <div class="bg-slate-800 border border-slate-700 rounded-2xl shadow-2xl max-w-2xl w-full p-6 space-y-5 animate-in fade-in duration-200">
+      
+      <div class="flex items-center justify-between border-b border-slate-700 pb-3">
+        <div>
+          <h3 class="text-base font-bold text-white flex items-center gap-2">
+            <i class="fa-solid fa-file-invoice text-blue-400"></i>
+            Detalle de Factura Folio <span id="modal-folio" class="text-emerald-400">--</span>
+          </h3>
+          <p id="modal-proveedor" class="text-xs text-slate-400">Proveedor</p>
+        </div>
+        <button id="btn-cerrar-detalle" class="text-slate-400 hover:text-white transition">
+          <i class="fa-solid fa-xmark text-lg"></i>
+        </button>
+      </div>
+
+      <!-- LISTA DE ÍTEMS -->
+      <div class="space-y-3">
+        <h4 class="text-xs font-semibold uppercase text-slate-400">Ítems Procesados en Inventario:</h4>
+        <div id="modal-items-lista" class="max-h-64 overflow-y-auto space-y-2 pr-1">
+          <!-- Items inyectados vía JS -->
+        </div>
+      </div>
+
+      <div class="border-t border-slate-700 pt-3 flex items-center justify-between">
+        <a id="btn-ver-imagen-s3" href="#" target="_blank" class="text-xs text-blue-400 hover:text-blue-300 flex items-center gap-1.5 transition">
+          <i class="fa-solid fa-image"></i>
+          <span>Ver Factura Original en S3</span>
+        </a>
+        <button id="btn-cerrar-modal" class="px-4 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-xs font-medium text-white transition">
+          Cerrar
+        </button>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ======================================================================== -->
+  <!-- MODAL HUMAN-IN-THE-LOOP (HITL RESOLUCIÓN) -->
+  <!-- ======================================================================== -->
+  <div id="modal-hitl" class="fixed inset-0 z-50 hidden bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+    <div class="bg-slate-800 border border-amber-500/50 rounded-2xl shadow-2xl max-w-xl w-full p-6 space-y-5 animate-in fade-in zoom-in-95 duration-200">
+      
+      <!-- CABECERA MODAL -->
+      <div class="flex items-start justify-between border-b border-slate-700 pb-4">
+        <div class="flex items-center space-x-3">
+          <div class="w-10 h-10 rounded-xl bg-amber-500/20 text-amber-400 flex items-center justify-center text-lg">
+            <i class="fa-solid fa-triangle-exclamation"></i>
+          </div>
+          <div>
+            <div class="flex items-center gap-2">
+              <h3 class="text-base font-bold text-white">Revisión Humana Requerida</h3>
+              <span id="hitl-badge-progreso" class="text-[11px] px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 font-bold border border-amber-500/30">1 pendiente</span>
+            </div>
+            <p class="text-xs text-slate-400">Homologa o da de alta este producto para ingresar su stock a DynamoDB</p>
+          </div>
+        </div>
+        <button type="button" id="btn-cerrar-modal-hitl" class="text-slate-400 hover:text-white transition">
+          <i class="fa-solid fa-xmark text-lg"></i>
+        </button>
+      </div>
+
+      <!-- DETALLE DEL ÍTEM DETECTADO -->
+      <div class="bg-slate-900/80 rounded-xl p-4 border border-slate-700/60 space-y-2">
+        <div class="text-xs font-semibold text-amber-400 flex items-center gap-1.5 uppercase tracking-wide">
+          <i class="fa-solid fa-magnifying-glass"></i> Glosa Facturada
+        </div>
+        <div id="hitl-glosa" class="text-sm font-bold text-white">ALTO DEL CARMEN 35g 1000cc</div>
+        <div class="grid grid-cols-3 gap-2 pt-2 text-xs text-slate-300">
+          <div><span class="text-slate-500 block">Formato:</span> <span id="hitl-formato" class="font-medium text-slate-200">1000cc</span></div>
+          <div><span class="text-slate-500 block">Cantidad:</span> <span id="hitl-cantidad" class="font-medium text-slate-200">420</span></div>
+          <div><span class="text-slate-500 block">Costo Factura:</span> <span id="hitl-costo" class="font-medium text-emerald-400">$2.425</span></div>
+        </div>
+      </div>
+
+      <!-- FORMULARIO DE DECISIÓN -->
+      <form id="form-hitl-resolver" class="space-y-4">
+        <div>
+          <label class="block text-xs font-medium text-slate-300 mb-2">Selecciona la acción a tomar:</label>
+          <div class="grid grid-cols-3 gap-2">
+            <button type="button" id="btn-hitl-opcion-crear" class="hitl-opcion active py-2.5 px-3 rounded-lg border text-xs font-medium text-center transition bg-emerald-500/10 border-emerald-500 text-emerald-300">
+              <i class="fa-solid fa-plus-circle block text-base mb-1"></i>
+              Crear Nuevo
+            </button>
+            <button type="button" id="btn-hitl-opcion-asociar" class="hitl-opcion py-2.5 px-3 rounded-lg border text-xs font-medium text-center transition border-slate-700 text-slate-400 hover:border-slate-600">
+              <i class="fa-solid fa-link block text-base mb-1"></i>
+              Asociar Existente
+            </button>
+            <button type="button" id="btn-hitl-opcion-omitir" class="hitl-opcion py-2.5 px-3 rounded-lg border text-xs font-medium text-center transition border-slate-700 text-slate-400 hover:border-slate-600">
+              <i class="fa-solid fa-ban block text-base mb-1"></i>
+              Omitir Ítem
+            </button>
+          </div>
+        </div>
+
+        <!-- CAMPOS PARA CREAR NUEVO PRODUCTO -->
+        <div id="seccion-crear-nuevo" class="space-y-3 bg-slate-900/50 p-4 rounded-xl border border-slate-700/40">
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="block text-[11px] text-slate-400 mb-1">SKU Asignado:</label>
+              <input type="text" id="hitl-input-sku" class="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-1.5 text-xs text-white uppercase focus:ring-1 focus:ring-emerald-500">
+            </div>
+            <div>
+              <label class="block text-[11px] text-slate-400 mb-1">Nombre Comercial:</label>
+              <input type="text" id="hitl-input-nombre" class="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-1.5 text-xs text-white focus:ring-1 focus:ring-emerald-500">
+            </div>
+          </div>
+
+          <div class="grid grid-cols-3 gap-2">
+            <div>
+              <label class="block text-[11px] text-slate-400 mb-1">Marca:</label>
+              <input type="text" id="hitl-input-marca" class="w-full bg-slate-800 border border-slate-600 rounded-lg px-2.5 py-1.5 text-xs text-white">
+            </div>
+            <div>
+              <label class="block text-[11px] text-slate-400 mb-1">Categoría:</label>
+              <input type="text" id="hitl-input-categoria" value="Destilados" class="w-full bg-slate-800 border border-slate-600 rounded-lg px-2.5 py-1.5 text-xs text-white">
+            </div>
+            <div>
+              <label class="block text-[11px] text-slate-400 mb-1">Formato:</label>
+              <input type="text" id="hitl-input-formato" class="w-full bg-slate-800 border border-slate-600 rounded-lg px-2.5 py-1.5 text-xs text-white">
+            </div>
+          </div>
+
+          <div class="grid grid-cols-2 gap-3 pt-1">
+            <div>
+              <label class="block text-[11px] text-slate-400 mb-1">Costo Unitario ($):</label>
+              <input type="number" step="0.01" id="hitl-input-costo" class="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-1.5 text-xs text-white">
+            </div>
+            <div>
+              <label class="block text-[11px] text-slate-400 mb-1">Precio de Venta Sugerido ($):</label>
+              <input type="number" step="0.01" id="hitl-input-venta" class="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-1.5 text-xs text-emerald-400 font-semibold">
+            </div>
+          </div>
+        </div>
+
+        <!-- SECCIÓN ASOCIAR A SKU EXISTENTE -->
+        <div id="seccion-asociar-existente" class="hidden space-y-3 bg-slate-900/50 p-4 rounded-xl border border-slate-700/40">
+          <label class="block text-xs text-slate-400">Selecciona el producto del catálogo para actualizar su stock:</label>
+          <select id="hitl-select-sku" class="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-xs text-white">
+            <option value="">Cargando catálogo...</option>
+          </select>
+        </div>
+
+        <!-- BOTÓN DE CONFIRMACIÓN -->
+        <div class="flex items-center justify-end space-x-3 pt-2">
+          <button type="submit" id="btn-hitl-confirmar" class="w-full py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs shadow-lg transition flex items-center justify-center gap-2">
+            <i class="fa-solid fa-check"></i>
+            <span id="hitl-btn-text">Confirmar y Aplicar al Inventario</span>
+          </button>
+        </div>
+      </form>
+
+    </div>
+  </div>
+
+  <!-- JAVASCRIPT DE TABLAS -->
+  <script>
+    let productos = [];
+    let historial = [];
+    let facturaResolviendoId = null;
+    let itemRevisionActual = null;
+    let listaRevisionPendiente = [];
+    let accionSeleccionada = "CREAR_NUEVO";
+
+    const tabBtnProductos = document.getElementById("tab-btn-productos");
+    const tabBtnHistorial = document.getElementById("tab-btn-historial");
+    const sectionProductos = document.getElementById("section-productos");
+    const sectionHistorial = document.getElementById("section-historial");
+    const tbodyProductos = document.getElementById("tbody-productos");
+    const tbodyHistorial = document.getElementById("tbody-historial");
+    const btnRefresh = document.getElementById("btn-refresh");
+    const refreshIcon = document.getElementById("refresh-icon");
+
+    // Modal detalle
+    const modalDetalle = document.getElementById("modal-detalle-factura");
+    const btnCerrarDetalle = document.getElementById("btn-cerrar-detalle");
+    const btnCerrarModal = document.getElementById("btn-cerrar-modal");
+
+    // Modal HITL
+    const modalHitl = document.getElementById("modal-hitl");
+    const hitlBadgeProgreso = document.getElementById("hitl-badge-progreso");
+    const btnCerrarModalHitl = document.getElementById("btn-cerrar-modal-hitl");
+    const hitlGlosa = document.getElementById("hitl-glosa");
+    const hitlFormato = document.getElementById("hitl-formato");
+    const hitlCantidad = document.getElementById("hitl-cantidad");
+    const hitlCosto = document.getElementById("hitl-costo");
+    const btnHitlCrear = document.getElementById("btn-hitl-opcion-crear");
+    const btnHitlAsociar = document.getElementById("btn-hitl-opcion-asociar");
+    const btnHitlOmitir = document.getElementById("btn-hitl-opcion-omitir");
+    const seccionCrear = document.getElementById("seccion-crear-nuevo");
+    const seccionAsociar = document.getElementById("seccion-asociar-existente");
+    const hitlInputSku = document.getElementById("hitl-input-sku");
+    const hitlInputNombre = document.getElementById("hitl-input-nombre");
+    const hitlInputMarca = document.getElementById("hitl-input-marca");
+    const hitlInputCategoria = document.getElementById("hitl-input-categoria");
+    const hitlInputFormato = document.getElementById("hitl-input-formato");
+    const hitlInputCosto = document.getElementById("hitl-input-costo");
+    const hitlInputVenta = document.getElementById("hitl-input-venta");
+    const hitlSelectSku = document.getElementById("hitl-select-sku");
+
+    // Cambio de Tabs
+    tabBtnProductos.addEventListener("click", () => {
+      tabBtnProductos.className = "tab-btn px-4 py-2 rounded-xl text-sm font-semibold flex items-center gap-2 bg-blue-600 text-white shadow-md shadow-blue-900/20";
+      tabBtnHistorial.className = "tab-btn px-4 py-2 rounded-xl text-sm font-medium text-slate-400 hover:text-white hover:bg-slate-800 transition flex items-center gap-2";
+      sectionProductos.classList.remove("hidden");
+      sectionHistorial.classList.add("hidden");
+    });
+
+    tabBtnHistorial.addEventListener("click", () => {
+      tabBtnHistorial.className = "tab-btn px-4 py-2 rounded-xl text-sm font-semibold flex items-center gap-2 bg-blue-600 text-white shadow-md shadow-blue-900/20";
+      tabBtnProductos.className = "tab-btn px-4 py-2 rounded-xl text-sm font-medium text-slate-400 hover:text-white hover:bg-slate-800 transition flex items-center gap-2";
+      sectionHistorial.classList.remove("hidden");
+      sectionProductos.classList.add("hidden");
+    });
+
+    // Cargar Datos
+    async function cargarDatos() {
+      refreshIcon.classList.add("fa-spin");
+      try {
+        const [resProd, resHist] = await Promise.all([
+          fetch("/api/tablas/productos"),
+          fetch("/api/tablas/historial")
+        ]);
+
+        const dataProd = await resProd.json();
+        const dataHist = await resHist.json();
+
+        productos = dataProd.productos || [];
+        historial = dataHist.historial || [];
+
+        document.getElementById("count-badge-productos").innerText = productos.length;
+        document.getElementById("count-badge-historial").innerText = historial.length;
+
+        poblarSelectorCatalogo();
+        poblarCategorias();
+        renderizarProductos();
+        renderizarHistorial();
+        actualizarKPIs();
+
+      } catch (err) {
+        console.error("Error al cargar datos de tablas:", err);
+      } finally {
+        refreshIcon.classList.remove("fa-spin");
+      }
+    }
+
+    function poblarSelectorCatalogo() {
+      hitlSelectSku.innerHTML = productos.map(p => 
+        `<option value="${p.sku}">${p.sku} - ${p.nombre} (${p.formato}) [Stock: ${p.stock_actual}]</option>`
+      ).join("");
+    }
+
+    function poblarCategorias() {
+      const selectCat = document.getElementById("filtro-productos-categoria");
+      const cats = [...new Set(productos.map(p => p.categoria).filter(Boolean))].sort();
+      selectCat.innerHTML = `<option value="">Todas las categorías (${cats.length})</option>` +
+        cats.map(c => `<option value="${c}">${c}</option>`).join("");
+    }
+
+    function actualizarKPIs() {
+      document.getElementById("kpi-total-productos").innerText = productos.length;
+      const totalUnidades = productos.reduce((acc, p) => acc + (Number(p.stock_actual) || 0), 0);
+      document.getElementById("kpi-total-unidades").innerText = totalUnidades.toLocaleString("es-CL");
+
+      const alertas = productos.filter(p => (Number(p.stock_actual) || 0) <= (Number(p.stock_minimo) || 6)).length;
+      document.getElementById("kpi-stock-alerta").innerText = alertas;
+    }
+
+    function renderizarProductos() {
+      const texto = document.getElementById("filtro-productos-texto").value.toLowerCase();
+      const categoria = document.getElementById("filtro-productos-categoria").value;
+
+      const filtrados = productos.filter(p => {
+        const matchTexto = (p.sku || "").toLowerCase().includes(texto) ||
+                           (p.nombre || "").toLowerCase().includes(texto) ||
+                           (p.marca || "").toLowerCase().includes(texto);
+        const matchCat = !categoria || p.categoria === categoria;
+        return matchTexto && matchCat;
+      });
+
+      if (filtrados.length === 0) {
+        tbodyProductos.innerHTML = `<tr><td colspan="9" class="py-6 text-center text-slate-500">No se encontraron productos que coincidan.</td></tr>`;
+        return;
+      }
+
+      tbodyProductos.innerHTML = filtrados.map(p => {
+        const stock = Number(p.stock_actual) || 0;
+        const stockMin = Number(p.stock_minimo) || 6;
+        const bajoStock = stock <= stockMin;
+        const costo = Number(p.precio_costo) || 0;
+        const venta = Number(p.precio_venta) || 0;
+        const margen = costo > 0 ? (((venta - costo) / costo) * 100).toFixed(0) : 0;
+
+        return `
+          <tr class="hover:bg-slate-700/30 transition">
+            <td class="py-2.5 px-4 font-mono font-medium text-slate-300">${p.sku}</td>
+            <td class="py-2.5 px-4 font-semibold text-white">${p.nombre}</td>
+            <td class="py-2.5 px-4 text-slate-400">${p.marca || "-"}</td>
+            <td class="py-2.5 px-4 text-slate-400">${p.categoria || "-"}</td>
+            <td class="py-2.5 px-4 text-slate-400">${p.formato || "-"}</td>
+            <td class="py-2.5 px-4 text-center">
+              <span class="px-2 py-0.5 rounded-full font-bold text-xs ${bajoStock ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30' : 'bg-emerald-500/20 text-emerald-400'}">
+                ${stock} u.
+              </span>
+            </td>
+            <td class="py-2.5 px-4 text-right text-slate-300 font-mono">$${costo.toLocaleString("es-CL")}</td>
+            <td class="py-2.5 px-4 text-right text-emerald-400 font-mono font-bold">$${venta.toLocaleString("es-CL")}</td>
+            <td class="py-2.5 px-4 text-center font-mono text-slate-400">${margen}%</td>
+          </tr>
+        `;
+      }).join("");
+    }
+
+    function renderizarHistorial() {
+      const texto = document.getElementById("filtro-historial-texto").value.toLowerCase();
+
+      const filtrados = historial.filter(h => {
+        return (h.folio || "").toLowerCase().includes(texto) ||
+               (h.proveedor || "").toLowerCase().includes(texto);
+      });
+
+      if (filtrados.length === 0) {
+        tbodyHistorial.innerHTML = `<tr><td colspan="7" class="py-6 text-center text-slate-500">No hay facturas registradas aún.</td></tr>`;
+        return;
+      }
+
+      tbodyHistorial.innerHTML = filtrados.map((h, idx) => {
+        const fecha = h.fecha_procesamiento ? new Date(h.fecha_procesamiento).toLocaleString("es-CL") : "-";
+        const estado = h.estado || "DESCONOCIDO";
+        const pendientes = h.pendientes_count || 0;
+        let estadoBadge = "bg-slate-700 text-slate-300";
+
+        if (estado === "COMPLETADO") estadoBadge = "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30";
+        else if (estado === "REQUIERE_REVISION_MANUAL" || estado === "EN_COLA" || pendientes > 0) estadoBadge = "bg-amber-500/20 text-amber-400 border border-amber-500/30";
+        else if (estado.includes("ERROR")) estadoBadge = "bg-red-500/20 text-red-400 border border-red-500/30";
+
+        return `
+          <tr class="hover:bg-slate-700/30 transition">
+            <td class="py-2.5 px-4 font-mono font-bold text-white">${h.folio || "S/F"}</td>
+            <td class="py-2.5 px-4 text-slate-300 font-medium">${h.proveedor || "DESCONOCIDO"}</td>
+            <td class="py-2.5 px-4 text-slate-400 text-[11px]">${fecha}</td>
+            <td class="py-2.5 px-4 text-center font-bold">${h.total_items || (h.items ? h.items.length : 0)}</td>
+            <td class="py-2.5 px-4 text-right font-mono text-emerald-400 font-semibold">$${Number(h.total_factura || 0).toLocaleString("es-CL")}</td>
+            <td class="py-2.5 px-4 text-center">
+              <span class="px-2.5 py-0.5 rounded-full text-[11px] font-bold ${estadoBadge}">
+                ${pendientes > 0 ? `REVISIÓN (${pendientes})` : estado}
+              </span>
+            </td>
+            <td class="py-2.5 px-4 text-center">
+              <div class="flex items-center justify-center gap-1.5">
+                <button onclick="verDetalleFactura(${idx})" class="px-2.5 py-1 rounded bg-slate-700 hover:bg-slate-600 text-white text-[11px] font-medium transition flex items-center gap-1">
+                  <i class="fa-solid fa-eye text-xs"></i>
+                  <span>Ver</span>
+                </button>
+                ${(pendientes > 0 || estado === 'REQUIERE_REVISION_MANUAL') ? `
+                  <button onclick="resolverRevisionFactura('${h.id}')" class="px-2.5 py-1 rounded bg-amber-500 hover:bg-amber-400 text-slate-900 text-[11px] font-bold transition flex items-center gap-1 shadow-md shadow-amber-900/30">
+                    <i class="fa-solid fa-user-pen text-xs"></i>
+                    <span>Resolver (${pendientes || 1})</span>
+                  </button>
+                ` : ''}
+              </div>
+            </td>
+          </tr>
+        `;
+      }).join("");
+    }
+
+    window.verDetalleFactura = async function(idx) {
+      const h = historial[idx];
+      if (!h) return;
+
+      document.getElementById("modal-folio").innerText = h.folio || "S/F";
+      document.getElementById("modal-proveedor").innerText = "Proveedor: " + (h.proveedor || "Desconocido");
+
+      const lista = document.getElementById("modal-items-lista");
+      const items = h.items || [];
+
+      if (items.length === 0) {
+        lista.innerHTML = `<div class="text-xs text-slate-500 italic p-3">No hay desglose de ítems guardado.</div>`;
+      } else {
+        lista.innerHTML = items.map(item => `
+          <div class="bg-slate-900/60 p-3 rounded-lg border border-slate-700/60 text-xs space-y-1">
+            <div class="flex items-center justify-between font-semibold text-white">
+              <span>${item.glosa_original || "Ítem"}</span>
+              <span class="text-emerald-400 font-mono">$${Number(item.precio_unitario || 0).toLocaleString("es-CL")}</span>
+            </div>
+            <div class="flex items-center justify-between text-[11px] text-slate-400">
+              <span>Cantidad: ${item.cantidad || 1} u. | Formato: ${item.formato || "N/A"}</span>
+              <span class="px-2 py-0.5 rounded text-[10px] ${item.estado === 'REQUIERE_REVISION_MANUAL' ? 'bg-amber-500/20 text-amber-300 font-bold' : 'bg-slate-700 text-slate-300'}">
+                SKU: ${item.sku_homologado || 'Sin asignar'} (${item.estado || 'PENDIENTE'})
+              </span>
+            </div>
+          </div>
+        `).join("");
+      }
+
+      // URL de la imagen en S3
+      const btnImagen = document.getElementById("btn-ver-imagen-s3");
+      try {
+        const res = await fetch(`/api/facturas/${h.id}/imagen-url`);
+        if (res.ok) {
+          const urlData = await res.json();
+          btnImagen.href = urlData.url;
+          btnImagen.classList.remove("hidden");
+        } else {
+          btnImagen.classList.add("hidden");
+        }
+      } catch (e) {
+        btnImagen.classList.add("hidden");
+      }
+
+      modalDetalle.classList.remove("hidden");
+    };
+
+    // Iniciar Resolución de una factura desde la tabla
+    window.resolverRevisionFactura = async function(facturaId) {
+      facturaResolviendoId = facturaId;
+      try {
+        const res = await fetch(`/api/facturas/${facturaId}/estado`);
+        if (!res.ok) return;
+        const data = await res.json();
+        listaRevisionPendiente = data.items_revision || [];
+
+        if (listaRevisionPendiente.length > 0) {
+          abrirModalHitl(listaRevisionPendiente[0], listaRevisionPendiente.length);
+        } else {
+          alert("Todos los productos de esta factura ya han sido resueltos.");
+          cargarDatos();
+        }
+      } catch (e) {
+        alert("Error al cargar ítems para revisión: " + e.message);
+      }
+    };
+
+    function abrirModalHitl(item, totalPendientes = 1) {
+      itemRevisionActual = item;
+      hitlBadgeProgreso.innerText = `${totalPendientes} pendiente(s)`;
+      hitlGlosa.innerText = item.glosa_original || "Producto sin glosa";
+      hitlFormato.innerText = item.formato || "No especificado";
+      hitlCantidad.innerText = item.cantidad || 1;
+      hitlCosto.innerText = "$" + Number(item.precio_unitario || 0).toLocaleString("es-CL");
+
+      // Sugerencias automáticas
+      const palabras = (item.glosa_original || "").split(" ");
+      const marcaSugerida = palabras[0] || "General";
+      const skuSugerido = (item.glosa_original || "SKU-NUEVO").replace(/[^a-zA-Z0-9]/g, "-").toUpperCase().substring(0, 15);
+      
+      hitlInputSku.value = skuSugerido;
+      hitlInputNombre.value = item.glosa_original || "";
+      hitlInputMarca.value = marcaSugerida;
+      hitlInputFormato.value = item.formato || "Unidad";
+      hitlInputCosto.value = item.precio_unitario || 0;
+      hitlInputVenta.value = Math.round((item.precio_unitario || 1000) * 1.4);
+
+      setOpcionHitl("CREAR_NUEVO");
+      modalHitl.classList.remove("hidden");
+    }
+
+    btnCerrarModalHitl.addEventListener("click", () => {
+      modalHitl.classList.add("hidden");
+    });
+
+    function setOpcionHitl(opcion) {
+      accionSeleccionada = opcion;
+      [btnHitlCrear, btnHitlAsociar, btnHitlOmitir].forEach(b => {
+        b.className = "hitl-opcion py-2.5 px-3 rounded-lg border text-xs font-medium text-center transition border-slate-700 text-slate-400 hover:border-slate-600";
+      });
+
+      if (opcion === "CREAR_NUEVO") {
+        btnHitlCrear.className = "hitl-opcion py-2.5 px-3 rounded-lg border text-xs font-medium text-center transition bg-emerald-500/10 border-emerald-500 text-emerald-300";
+        seccionCrear.classList.remove("hidden");
+        seccionAsociar.classList.add("hidden");
+        document.getElementById("hitl-btn-text").innerText = "Crear e Ingresar al Inventario";
+      } else if (opcion === "ASOCIAR_EXISTENTE") {
+        btnHitlAsociar.className = "hitl-opcion py-2.5 px-3 rounded-lg border text-xs font-medium text-center transition bg-blue-500/10 border-blue-500 text-blue-300";
+        seccionCrear.classList.add("hidden");
+        seccionAsociar.classList.remove("hidden");
+        document.getElementById("hitl-btn-text").innerText = "Vincular y Sumar al Stock";
+      } else {
+        btnHitlOmitir.className = "hitl-opcion py-2.5 px-3 rounded-lg border text-xs font-medium text-center transition bg-red-500/10 border-red-500 text-red-300";
+        seccionCrear.classList.add("hidden");
+        seccionAsociar.classList.add("hidden");
+        document.getElementById("hitl-btn-text").innerText = "Omitir Ítem de la Factura";
+      }
+    }
+
+    btnHitlCrear.addEventListener("click", () => setOpcionHitl("CREAR_NUEVO"));
+    btnHitlAsociar.addEventListener("click", () => setOpcionHitl("ASOCIAR_EXISTENTE"));
+    btnHitlOmitir.addEventListener("click", () => setOpcionHitl("OMITIR"));
+
+    // Enviar Resolución HITL desde Tablas
+    document.getElementById("form-hitl-resolver").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      if (!facturaResolviendoId || !itemRevisionActual) return;
+
+      const payload = {
+        glosa_original: itemRevisionActual.glosa_original,
+        accion: accionSeleccionada,
+        cantidad: itemRevisionActual.cantidad || 1,
+        precio_costo: parseFloat(hitlInputCosto.value) || 0,
+        sku: accionSeleccionada === "ASOCIAR_EXISTENTE" ? hitlSelectSku.value : hitlInputSku.value,
+        nombre: hitlInputNombre.value,
+        marca: hitlInputMarca.value,
+        categoria: hitlInputCategoria.value,
+        subcategoria: "General",
+        formato: hitlInputFormato.value,
+        precio_venta: parseFloat(hitlInputVenta.value) || 0
+      };
+
+      try {
+        const res = await fetch(`/api/facturas/${facturaResolviendoId}/resolver-item`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+
+        if (!res.ok) throw new Error("Error enviando resolución");
+        
+        modalHitl.classList.add("hidden");
+
+        // Comprobar si quedan más ítems en esta factura
+        const resEstado = await fetch(`/api/facturas/${facturaResolviendoId}/estado`);
+        if (resEstado.ok) {
+          const dataEstado = await resEstado.json();
+          listaRevisionPendiente = dataEstado.items_revision || [];
+          if (listaRevisionPendiente.length > 0) {
+            setTimeout(() => {
+              abrirModalHitl(listaRevisionPendiente[0], listaRevisionPendiente.length);
+            }, 300);
+          } else {
+            cargarDatos();
+          }
+        }
+
+      } catch (err) {
+        alert("Error al aplicar la resolución: " + err.message);
+      }
+    });
+
+    btnCerrarDetalle.addEventListener("click", () => modalDetalle.classList.add("hidden"));
+    btnCerrarModal.addEventListener("click", () => modalDetalle.classList.add("hidden"));
+
+    // Filtros dinámicos
+    document.getElementById("filtro-productos-texto").addEventListener("input", renderizarProductos);
+    document.getElementById("filtro-productos-categoria").addEventListener("change", renderizarProductos);
+    document.getElementById("filtro-historial-texto").addEventListener("input", renderizarHistorial);
+    btnRefresh.addEventListener("click", cargarDatos);
+
+    // Cargar al inicio
+    cargarDatos();
+  </script>
+</body>
+</html>

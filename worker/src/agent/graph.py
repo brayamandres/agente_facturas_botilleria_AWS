@@ -10,6 +10,7 @@ Implementa una Máquina de Estados Finita (StateGraph) adaptada a AWS:
 """
 import sys
 import logging
+from datetime import datetime, timezone
 from typing import Dict, Any, Optional, List
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import MemorySaver
@@ -29,6 +30,67 @@ from worker.src.tools import (
 )
 
 logger = logging.getLogger("worker.agent.graph")
+
+
+def _registrar_progreso_en_dynamodb(
+    factura_id: Optional[str],
+    mensaje: str,
+    estado_parcial: Optional[str] = None,
+    proveedor: Optional[str] = None,
+    folio: Optional[str] = None,
+    items: Optional[List[Dict[str, Any]]] = None
+):
+    """Actualiza en tiempo real la bitácora episódica y estado en DynamoDB para seguimiento web."""
+    if not factura_id or str(factura_id) in ["test-local-debug", "DESCONOCIDO", "local"]:
+        return
+    try:
+        from worker.config import get_dynamodb_resource, DYNAMODB_TABLE_HISTORIAL
+        resource = get_dynamodb_resource()
+        table = resource.Table(DYNAMODB_TABLE_HISTORIAL)
+        now_str = datetime.now().strftime("%H:%M:%S")
+        linea = f"[{now_str}] {mensaje}"
+
+        update_expr = "SET bitacora = list_append(if_not_exists(bitacora, :vacia), :nuevo_log)"
+        expr_values: Dict[str, Any] = {
+            ":nuevo_log": [linea],
+            ":vacia": []
+        }
+        expr_names: Dict[str, str] = {}
+        if estado_parcial:
+            update_expr += ", #st = :st"
+            expr_names["#st"] = "estado"
+            expr_values[":st"] = estado_parcial
+        if proveedor and str(proveedor).strip():
+            update_expr += ", proveedor = :prov"
+            expr_values[":prov"] = str(proveedor).strip()
+        if folio and str(folio).strip():
+            update_expr += ", folio = :fol"
+            expr_values[":fol"] = str(folio).strip()
+        if items is not None:
+            from decimal import Decimal
+            def _sanitizar(v):
+                if isinstance(v, float):
+                    return Decimal(str(v))
+                if isinstance(v, dict):
+                    return {k: _sanitizar(val) for k, val in v.items()}
+                if isinstance(v, list):
+                    return [_sanitizar(elem) for elem in v]
+                return v
+            update_expr += ", #items = :items"
+            expr_names["#items"] = "items"
+            expr_values[":items"] = _sanitizar(items)
+
+        kwargs: Dict[str, Any] = {
+            "Key": {"id": factura_id},
+            "UpdateExpression": update_expr,
+            "ExpressionAttributeValues": expr_values
+        }
+        if expr_names:
+            kwargs["ExpressionAttributeNames"] = expr_names
+
+        table.update_item(**kwargs)
+    except Exception as e:
+        logger.debug("No se pudo registrar progreso en DynamoDB para %s: %s", factura_id, e)
 
 
 # ============================================================================
@@ -98,6 +160,13 @@ def node_extraer(state: AgentState) -> Dict[str, Any]:
         f"Folio: '{datos_factura.get('numero_factura')}', Ítems detectados: {len(items)}"
     )
     logger.info(" -> %s", msg)
+    _registrar_progreso_en_dynamodb(
+        state.get("factura_id"),
+        msg,
+        estado_parcial="ANALIZANDO",
+        proveedor=datos_factura.get("proveedor"),
+        folio=datos_factura.get("numero_factura")
+    )
 
     return {
         "datos_factura": datos_factura,
@@ -210,6 +279,7 @@ def node_recuperar_candidatos(state: AgentState) -> Dict[str, Any]:
     nombres_candidatos = [f"{c['sku']} ({c['nombre']})" for c in candidatos]
     msg = f"Candidatos recuperados de DynamoDB: {', '.join(nombres_candidatos) if nombres_candidatos else 'Ninguno'}"
     logger.info(" -> %s", msg)
+    _registrar_progreso_en_dynamodb(state.get("factura_id"), f"DynamoDB VectorIndexes: {msg}")
 
     return {
         "candidatos_actuales": candidatos,
@@ -249,6 +319,7 @@ def node_razonar_homologacion(state: AgentState) -> Dict[str, Any]:
 
     msg = f"Decisión de homologación: SKU={sku} (Confianza={confianza:.2f}) | Motivo: {justificacion}"
     logger.info(" -> %s", msg)
+    _registrar_progreso_en_dynamodb(state.get("factura_id"), f"Razonamiento IA: {msg}")
 
     return {
         "decision_actual": decision,
@@ -309,6 +380,20 @@ def node_intervencion_humana(state: AgentState) -> Dict[str, Any]:
     if not sys.stdin.isatty():
         logger.warning(
             "[HITL Headless] Contenedor sin TTY interactiva. Registrando ítem para auditoría humana posterior."
+        )
+        _registrar_progreso_en_dynamodb(
+            state.get("factura_id"),
+            f"⚠️ Revisión Humana Requerida: '{glosa}' (Confianza: {confianza:.2f}). Esperando respuesta del usuario en la interfaz web.",
+            estado_parcial="REQUIERE_REVISION_MANUAL",
+            items=state.get("items_procesados", []) + [{
+                "glosa_original": glosa,
+                "formato": formato,
+                "cantidad": (cantidad or 1) * unidades_pack,
+                "unidades_por_pack": unidades_pack,
+                "precio_unitario": costo_factura or 0.0,
+                "sku_homologado": sku,
+                "estado": "REQUIERE_REVISION_MANUAL"
+            }]
         )
         datos_accion = {
             "tipo_accion": "REQUIERE_AUDITORIA_HUMANA",
@@ -381,6 +466,7 @@ def node_aplicar_cambios(state: AgentState) -> Dict[str, Any]:
     item = state["item_actual"] or {}
     decision = state["decision_actual"] or {}
     accion = state.get("datos_intervencion_humana")
+    folio = _limpiar_texto(state.get("datos_factura", {}).get("numero_factura")) or None
 
     cantidad_bultos = _parsear_entero_positivo(item.get("cantidad")) or 0
     unidades_pack = _parsear_entero_positivo(item.get("unidades")) or 1
@@ -410,6 +496,7 @@ def node_aplicar_cambios(state: AgentState) -> Dict[str, Any]:
                 "precio_costo": accion["precio_costo"],
                 "precio_venta": accion["precio_venta"],
                 "stock_inicial": accion["stock_inicial"],
+                "folio_factura": folio,
             }) or {}
 
             msg = resultado.get("mensaje", "")
@@ -421,7 +508,8 @@ def node_aplicar_cambios(state: AgentState) -> Dict[str, Any]:
                 "sku": accion["sku"],
                 "cantidad": accion["cantidad"],
                 "nuevo_costo": accion["precio_costo"],
-                "nuevo_precio_venta": accion.get("nuevo_precio_venta")
+                "nuevo_precio_venta": accion.get("nuevo_precio_venta"),
+                "folio_factura": folio,
             }) or {}
 
             msg = resultado.get("mensaje", "")
@@ -447,7 +535,8 @@ def node_aplicar_cambios(state: AgentState) -> Dict[str, Any]:
         resultado = actualizar_stock_y_costo.invoke({
             "sku": sku,
             "cantidad": cantidad_total,
-            "nuevo_costo": costo
+            "nuevo_costo": costo,
+            "folio_factura": folio,
         }) or {}
 
         msg = resultado.get("mensaje", "")
@@ -475,7 +564,14 @@ def node_registrar_auditoria(state: AgentState) -> Dict[str, Any]:
     items_procesados = state.get("items_procesados", [])
 
     hubo_errores = any(i.get("estado") == "ERROR_ESCRITURA" for i in items_procesados)
-    estado_auditoria = "COMPLETADO_CON_ERRORES" if hubo_errores else "COMPLETADO"
+    hay_pendientes_revision = any(i.get("estado") == "REQUIERE_REVISION_MANUAL" for i in items_procesados)
+
+    if hubo_errores:
+        estado_auditoria = "COMPLETADO_CON_ERRORES"
+    elif hay_pendientes_revision:
+        estado_auditoria = "REQUIERE_REVISION_MANUAL"
+    else:
+        estado_auditoria = "COMPLETADO"
 
     logger.info("[Nodo Auditoría] Guardando registro en DynamoDB para folio '%s'...", folio)
 
@@ -485,7 +581,9 @@ def node_registrar_auditoria(state: AgentState) -> Dict[str, Any]:
         "total_items": len(items_procesados),
         "items_procesados": items_procesados,
         "estado": estado_auditoria,
-        "ruta_imagen": state.get("s3_key") or state.get("ruta_imagen")
+        "ruta_imagen": state.get("s3_key") or state.get("ruta_imagen"),
+        "id_auditoria": state.get("factura_id"),
+        "bitacora": state.get("mensajes_bitacora", []) + [f"Factura folio '{folio}' procesada ({estado_auditoria})."]
     })
 
     id_auditoria = resultado.get("id_auditoria")
@@ -541,8 +639,12 @@ def decidir_ruta_siguiente_item(state: AgentState) -> str:
 # 3. ENSAMBLAJE DEL GRAFO (LangGraph StateGraph)
 # ============================================================================
 
-def crear_grafo_agente():
-    """Construye y compila el StateGraph del agente con soporte para MemorySaver."""
+def crear_grafo_agente(checkpointer: Optional[Any] = None):
+    """
+    Construye y compila el StateGraph del agente.
+    Por defecto compila sin checkpointer en memoria para evitar acumulación ilimitada de RAM
+    en el Worker asíncrono (diseño Stateless). Se puede suministrar un checkpointer si se requiere reanudar estados.
+    """
     builder = StateGraph(AgentState)
 
     # Registrar Nodos
@@ -600,6 +702,7 @@ def crear_grafo_agente():
     )
     builder.add_edge("registrar_auditoria", END)
 
-    checkpointer = MemorySaver()
-    return builder.compile(checkpointer=checkpointer)
+    if checkpointer is not None:
+        return builder.compile(checkpointer=checkpointer)
+    return builder.compile()
 
