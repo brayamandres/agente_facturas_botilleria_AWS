@@ -1,0 +1,34 @@
+# Archivos de entorno y credenciales (Seguridad)
+.env
+env.txt
+*.json
+!src/services/seed_data.json
+
+# Entornos virtuales de Python
+venv/
+.venv/
+env/
+
+# Caché y archivos compilados de Python
+__pycache__/
+*.pyc
+
+# Carpetas de datos y documentos locales
+documentos/
+
+# Jupyter Notebooks
+# *.ipynb
+agente_factura.ipynb
+
+# Archivos del sistema u otro software
+.DS_Store
+Thumbs.db
+.vscode/
+
+# Carpeta de imagenes optimizadas
+optimizado/
+
+# Ignora imagenes agregadas, menos la factura1.png
+!factura1.png
+*.png
+*.jpg

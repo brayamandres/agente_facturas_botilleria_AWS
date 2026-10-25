@@ -1,0 +1,45 @@
+version: "3.8"
+
+services:
+  # ============================================================================
+  # 1. Microservicio API de Ingesta Web (I/O Bound - Ligero)
+  # ============================================================================
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: botilleria_api
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  # ============================================================================
+  # 2. Microservicio Worker de Procesamiento con IA (CPU/ML Bound - Asíncrono)
+  # ============================================================================
+  worker:
+    build:
+      context: ./worker
+      dockerfile: Dockerfile
+    container_name: botilleria_worker
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    # Para escalar horizontalmente con múltiples réplicas desatendidas:
+    # deploy:
+    #   replicas: 2
+

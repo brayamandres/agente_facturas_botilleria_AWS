@@ -1,0 +1,13 @@
+openai
+firebase-admin
+langchain
+langchain-core
+langchain-openai
+langchain-google-genai
+langgraph
+google-genai
+sentence-transformers
+groq
+pillow
+python-dotenv
+colorist
