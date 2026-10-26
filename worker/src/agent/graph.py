@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from typing import Dict, Any, Optional, List
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import MemorySaver
+from shared.finanzas import validar_finanzas, CAMPOS_FINANCIEROS, monto_decimal
 
 from worker.src.agent.state import AgentState
 from worker.src.tools.reasoning_tools import validar_respuesta_homologacion
@@ -153,7 +154,8 @@ def node_extraer(state: AgentState) -> Dict[str, Any]:
     logger.info("[Nodo Extraer] Extrayendo datos de la factura: '%s'...", ruta_imagen)
 
     datos_factura = extraer_factura_desde_imagen.invoke({"ruta_imagen": ruta_imagen}) or {}
-    items = list(datos_factura.get("items") or [])
+    datos_factura.update(validar_finanzas(datos_factura))
+    items = [i for i in (datos_factura.get("items") or []) if str(i.get("tipo_item", "PRODUCTO")).upper() != "CARGO"]
 
     msg = (
         f"Factura extraída con éxito. Proveedor: '{datos_factura.get('proveedor')}', "
@@ -488,18 +490,25 @@ def node_aplicar_cambios(state: AgentState) -> Dict[str, Any]:
     item = state["item_actual"] or {}
     decision = state["decision_actual"] or {}
     accion = state.get("datos_intervencion_humana")
-    folio = _limpiar_texto(state.get("datos_factura", {}).get("numero_factura")) or None
+    folio_base = _limpiar_texto(state.get("datos_factura", {}).get("numero_factura")) or None
+    indice_linea = len(state.get("items_procesados", [])) + 1
+    folio = f"{folio_base}#L{indice_linea}" if folio_base else None
 
     cantidad_bultos = _parsear_entero_positivo(item.get("cantidad")) or 0
     unidades_pack = _parsear_entero_positivo(item.get("unidades")) or 1
     unidades_totales = cantidad_bultos * unidades_pack
 
     registro_item = {
+        "linea": indice_linea,
         "glosa_original": _limpiar_texto(item.get("nombre_glosa")) or "ILEGIBLE",
         "formato": _limpiar_texto(item.get("formato")) or None,
         "cantidad": unidades_totales,
         "unidades_por_pack": unidades_pack,
         "precio_unitario": _parsear_float_positivo(item.get("precio_unitario")) or 0.0,
+        "precio_facturado": monto_decimal(item.get("precio_unitario")),
+        "cantidad_facturada": monto_decimal(item.get("cantidad")),
+        "base_precio": str(item.get("base_precio")).upper() if str(item.get("base_precio")).upper() in {"UNIDAD", "BULTO"} else None,
+        "monto_linea_neto": monto_decimal(item.get("monto_linea_neto")),
         "sku_homologado": None,
         "estado": "PENDIENTE"
     }
@@ -604,16 +613,32 @@ def node_registrar_auditoria(state: AgentState) -> Dict[str, Any]:
 
     logger.info("[Nodo Auditoría] Guardando registro en DynamoDB para folio '%s'...", folio)
 
+    s3_key = state.get("s3_key")
+    ruta_imagen = s3_key or state.get("ruta_imagen")
+
     resultado = registrar_auditoria_factura.invoke({
         "folio": folio,
         "proveedor": proveedor,
         "total_items": len(items_procesados),
         "items_procesados": items_procesados,
         "estado": estado_auditoria,
-        "ruta_imagen": state.get("s3_key") or state.get("ruta_imagen"),
+        "ruta_imagen": ruta_imagen,
+        "s3_key": s3_key,
+        "total_factura": datos.get("total_factura"),
+        "datos_financieros": {k: datos.get(k) for k in CAMPOS_FINANCIEROS},
+        "cargos": [i for i in datos.get("items", []) if str(i.get("tipo_item", "PRODUCTO")).upper() == "CARGO"],
         "id_auditoria": state.get("factura_id"),
         "bitacora": state.get("mensajes_bitacora", []) + [f"Factura folio '{folio}' procesada ({estado_auditoria})."]
-    })
+    }) or {}
+
+    if not resultado.get("exito"):
+        err_msg = resultado.get("mensaje") or resultado.get("error") or "Fallo al registrar auditoría en DynamoDB."
+        logger.error("[Nodo Auditoría] %s", err_msg)
+        return {
+            "auditoria_id": None,
+            "estado_final": "ERROR",
+            "mensajes_bitacora": state["mensajes_bitacora"] + [f"ERROR: {err_msg}"]
+        }
 
     id_auditoria = resultado.get("id_auditoria")
     msg = f"Factura folio '{folio}' procesada ({estado_auditoria}). Auditoría ID: {id_auditoria}"

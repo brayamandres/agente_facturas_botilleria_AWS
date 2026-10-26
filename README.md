@@ -1,5 +1,7 @@
 # Agente Inteligente de Homologación de Facturas e Inventario (AWS Cloud)
 
+La aplicación incluye una sección de **Estadísticas y asistente**, con gastos por proveedor y mes, exportación CSV y revisión de encabezados históricos sin modificar stock. Ver [configuración, reglas y pruebas](docs/ESTADISTICAS.md).
+
 Sistema de inteligencia artificial distribuido, escalable y resiliente desarrollado bajo una **Arquitectura de Microservicios Orientada a Eventos (Event-Driven)** en **Amazon Web Services (AWS)**. Automatiza la ingesta, extracción multimodal, homologación semántica con **Búsqueda Vectorial Nativa en Amazon DynamoDB** y actualización transaccional del inventario de botillerías a partir de facturas de distribuidores de licores en Chile.
 
 ---

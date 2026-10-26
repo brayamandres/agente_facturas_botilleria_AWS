@@ -1,0 +1,27 @@
+{% macro nav_icon(kind) -%}
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+  {% if kind == 'file' %}<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 12h8M8 16h8M8 8h2"/>
+  {% elif kind == 'database' %}<ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/>
+  {% elif kind == 'chart' %}<path d="M4 3v17h17M8 15v-4M13 15V6M18 15v-7"/>
+  {% else %}<path d="m15 3 6 6-3 3-1-1-9 9a3 3 0 0 1-4-4l9-9-1-1zM7 13l4 4"/>{% endif %}
+</svg>
+{%- endmacro %}
+<header class="app-header">
+  <div class="app-header__inner">
+    <a href="/" class="app-brand" aria-label="Botillería AWS Agent, inicio">
+      <span class="app-brand__icon{% if active_page == 'tablas' %} app-brand__icon--blue{% endif %}">{{ nav_icon('database' if active_page == 'tablas' else 'chart' if active_page == 'estadisticas' else 'bottle') }}</span>
+      <span class="app-brand__copy">
+        <span class="app-brand__title">
+          {% if active_page == 'tablas' %}Visor de Base de Datos <span class="app-brand__blue">DynamoDB</span>
+          {% else %}Botillería <span class="app-brand__green">AWS</span> Agent <span class="app-brand__version">v2.1</span>{% endif %}
+        </span>
+        <span class="app-brand__subtitle">{% if active_page == 'tablas' %}Catálogo de Productos con Búsqueda Vectorial e Historial de Facturas{% elif active_page == 'estadisticas' %}Compras, proveedores y revisión de facturas{% else %}FastAPI + LangGraph + DynamoDB Vector + SQS{% endif %}</span>
+      </span>
+    </a>
+    <nav class="app-nav" aria-label="Navegación principal">
+      {% for ruta, clave, nombre, icono in [('/', 'inicio', 'Procesar Facturas', 'file'), ('/tablas', 'tablas', 'Inventario & Historial', 'database'), ('/estadisticas', 'estadisticas', 'Estadísticas', 'chart')] %}
+      <a href="{{ ruta }}" class="app-nav__link app-nav__link--{{ clave }}"{% if active_page == clave %} aria-current="page"{% endif %}>{{ nav_icon(icono) }}<span>{{ nombre }}</span></a>
+      {% endfor %}
+    </nav>
+  </div>
+</header>

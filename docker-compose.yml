@@ -1,13 +1,11 @@
-version: "3.8"
-
 services:
   # ============================================================================
   # 1. Microservicio API de Ingesta Web (I/O Bound - Ligero)
   # ============================================================================
   api:
     build:
-      context: ./api
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: api/Dockerfile
     container_name: botilleria_api
     ports:
       - "8000:8000"
@@ -28,8 +26,8 @@ services:
   # ============================================================================
   worker:
     build:
-      context: ./worker
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: worker/Dockerfile
     container_name: botilleria_worker
     env_file:
       - .env

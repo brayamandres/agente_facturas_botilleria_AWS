@@ -17,13 +17,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Copiar e instalar dependencias de Python en una capa dedicada para optimizar caché
-COPY requirements.txt .
+COPY api/requirements.txt .
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --upgrade pip && \
     pip install -r requirements.txt
 
 # Copiar el código del microservicio
-COPY . /app/api
+COPY api /app/api
+COPY shared /app/shared
 
 # Exponer el puerto del Application Load Balancer
 EXPOSE 8000
