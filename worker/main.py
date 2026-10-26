@@ -13,12 +13,14 @@ import json
 import time
 import logging
 import argparse
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any
 
 from worker.config import (
     SQS_QUEUE_URL,
     S3_BUCKET_NAME,
+    DATA_OPTIMIZADO_DIR,
     get_sqs_client,
     get_s3_client
 )
@@ -103,10 +105,10 @@ def procesar_factura_evento(evento: Dict[str, Any], grafo) -> bool:
         total_items = len(estado_final.get("items_procesados", []))
         auditoria_id = estado_final.get("auditoria_id")
 
-        if estado_resultado == "ERROR":
+        if estado_resultado in ("ERROR", "COMPLETADO_CON_ERRORES") or not auditoria_id:
             logger.error(
-                "Factura ID: %s finalizó con estado ERROR tras %.2f segundos. Ítems procesados: %d. Mensaje retenido en SQS.",
-                factura_id, tiempo_total, total_items
+                "Factura ID: %s finalizó con estado %s (Auditoría ID: %s) tras %.2f segundos. Ítems procesados: %d. Mensaje retenido en SQS.",
+                factura_id, estado_resultado, auditoria_id, tiempo_total, total_items
             )
             logger.info("================================================================================")
             return False
@@ -138,13 +140,15 @@ def procesar_factura_evento(evento: Dict[str, Any], grafo) -> bool:
         return False
 
     finally:
-        # 4. Diseño Stateless: Limpieza obligatoria de archivos en /tmp/
-        if ruta_temporal.exists():
-            try:
-                ruta_temporal.unlink()
-                logger.info("Archivo temporal '%s' eliminado. Contenedor en estado Stateless.", ruta_temporal)
-            except Exception as ex_del:
-                logger.warning("No fue posible eliminar el archivo temporal '%s': %s", ruta_temporal, ex_del)
+        # 4. Diseño Stateless: Limpieza obligatoria de archivos en /tmp/ y data/optimizado/
+        ruta_opt = DATA_OPTIMIZADO_DIR / f"opt_{ruta_temporal.name}"
+        for archivo_temp in (ruta_temporal, ruta_opt):
+            if archivo_temp.exists():
+                try:
+                    archivo_temp.unlink()
+                    logger.info("Archivo temporal '%s' eliminado. Contenedor en estado Stateless.", archivo_temp)
+                except Exception as ex_del:
+                    logger.warning("No fue posible eliminar el archivo temporal '%s': %s", archivo_temp, ex_del)
 
 
 def procesar_resolucion_humana(evento: Dict[str, Any]) -> bool:
@@ -167,9 +171,33 @@ def procesar_resolucion_humana(evento: Dict[str, Any]) -> bool:
     from worker.config import get_dynamodb_resource, DYNAMODB_TABLE_HISTORIAL
 
     try:
+        resource = get_dynamodb_resource()
+        table = resource.Table(DYNAMODB_TABLE_HISTORIAL)
+        res_factura = table.get_item(Key={"id": factura_id}) if factura_id else {}
+        item_factura = res_factura.get("Item", {})
+
+        folio_factura = str(item_factura.get("folio") or "").strip()
+        if not folio_factura or folio_factura.lower() in ["none", "null", "s/f", "n/a", "pendiente_extraccion"]:
+            folio_factura = str(factura_id or "HITL").strip()
+
+        items = item_factura.get("items", [])
+        target_idx = None
+        for idx, it in enumerate(items):
+            if it.get("glosa_original") == glosa and it.get("estado") == "REQUIERE_REVISION_MANUAL":
+                target_idx = idx
+                break
+        if target_idx is None:
+            for idx, it in enumerate(items):
+                if it.get("glosa_original") == glosa or it.get("estado") == "REQUIERE_REVISION_MANUAL":
+                    target_idx = idx
+                    break
+
+        linea_id = (target_idx + 1) if target_idx is not None else (glosa or "1")
+        folio_idempotencia = f"{folio_factura}#HITL#{linea_id}"
+
         if accion == "CREAR_NUEVO" and sku:
             logger.info("Creando nuevo producto en DynamoDB con vector nativo para SKU: %s", sku)
-            registrar_nuevo_producto.invoke({
+            res_op = registrar_nuevo_producto.invoke({
                 "sku": sku,
                 "nombre": resolucion.get("nombre", glosa),
                 "marca": resolucion.get("marca", "General"),
@@ -179,28 +207,36 @@ def procesar_resolucion_humana(evento: Dict[str, Any]) -> bool:
                 "precio_costo": costo,
                 "precio_venta": venta or (costo * 1.4),
                 "stock_inicial": cantidad,
-            })
+                "folio_factura": folio_idempotencia,
+            }) or {}
+            if not res_op.get("exito"):
+                logger.error("Fallo al crear nuevo producto SKU '%s' en HITL: %s", sku, res_op.get("mensaje"))
+                return False
 
         elif accion == "ASOCIAR_EXISTENTE" and sku:
-            logger.info("Actualizando stock en DynamoDB para SKU: %s (+%d unidades)", sku, cantidad)
-            actualizar_stock_y_costo.invoke({
+            logger.info("Actualizando stock en DynamoDB para SKU: %s (+%d unidades, Folio: %s)", sku, cantidad, folio_idempotencia)
+            res_op = actualizar_stock_y_costo.invoke({
                 "sku": sku,
                 "cantidad": cantidad,
                 "nuevo_costo": costo,
                 "nuevo_precio_venta": venta,
-            })
+                "folio_factura": folio_idempotencia,
+            }) or {}
+            if not res_op.get("exito"):
+                logger.error("Fallo al actualizar stock SKU '%s' en HITL: %s", sku, res_op.get("mensaje"))
+                return False
 
-        # Actualizar registro histórico en DynamoDB
-        resource = get_dynamodb_resource()
-        table = resource.Table(DYNAMODB_TABLE_HISTORIAL)
-        res_factura = table.get_item(Key={"id": factura_id})
-        item_factura = res_factura.get("Item", {})
+        if target_idx is not None:
+            items[target_idx]["estado"] = "RESUELTO_MANUAL" if accion != "OMITIR" else "OMITIDO_POR_HUMANO"
+            items[target_idx]["sku_homologado"] = sku if accion != "OMITIR" else None
+        else:
+            for it in items:
+                if it.get("glosa_original") == glosa or it.get("estado") == "REQUIERE_REVISION_MANUAL":
+                    it["estado"] = "RESUELTO_MANUAL" if accion != "OMITIR" else "OMITIDO_POR_HUMANO"
+                    it["sku_homologado"] = sku if accion != "OMITIR" else None
 
-        items = item_factura.get("items", [])
-        for it in items:
-            if it.get("glosa_original") == glosa or it.get("estado") == "REQUIERE_REVISION_MANUAL":
-                it["estado"] = "RESUELTO_MANUAL" if accion != "OMITIR" else "OMITIDO_POR_HUMANO"
-                it["sku_homologado"] = sku if accion != "OMITIR" else None
+        pendientes = [i for i in items if i.get("estado") == "REQUIERE_REVISION_MANUAL"]
+        nuevo_estado = "REQUIERE_REVISION_MANUAL" if pendientes else "COMPLETADO"
 
         hora_str = datetime.now().strftime("%H:%M:%S")
         log_msg = f"[{hora_str}] [RESOLUCIÓN APLICADA] Ítem '{glosa}' resuelto por humano: {accion} (SKU: {sku or 'OMITIDO'}). Inventario actualizado en DynamoDB."
@@ -213,13 +249,13 @@ def procesar_resolucion_humana(evento: Dict[str, Any]) -> bool:
                 "#items": "items"
             },
             ExpressionAttributeValues={
-                ":nuevo_st": "COMPLETADO",
+                ":nuevo_st": nuevo_estado,
                 ":items": items,
                 ":nuevo_log": [log_msg],
                 ":vacia": []
             }
         )
-        logger.info("Factura ID %s actualizada a COMPLETADO tras resolución humana exitosa.", factura_id)
+        logger.info("Factura ID %s actualizada a %s tras resolución humana exitosa.", factura_id, nuevo_estado)
         return True
 
     except Exception as e:

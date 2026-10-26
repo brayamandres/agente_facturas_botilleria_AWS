@@ -276,8 +276,17 @@ def consultar_duplicidad_en_historial(
         # (ignora intentos en análisis inicial o abortados previamente)
         filtro = filtro & Attr("estado").is_in(["COMPLETADO", "REQUIERE_REVISION_MANUAL", "COMPLETADO_CON_ERRORES"])
 
-        res = table.scan(FilterExpression=filtro, Limit=1)
-        items = res.get("Items", [])
+        items = []
+        scan_kwargs: Dict[str, Any] = {"FilterExpression": filtro}
+        while True:
+            res = table.scan(**scan_kwargs)
+            items.extend(res.get("Items", []))
+            if items:
+                break
+            last_key = res.get("LastEvaluatedKey")
+            if not last_key:
+                break
+            scan_kwargs["ExclusiveStartKey"] = last_key
 
         if items:
             existente = items[0]
@@ -316,7 +325,7 @@ def actualizar_stock_y_costo_dynamo(
 ) -> Dict[str, Any]:
     """
     Actualiza atómicamente el stock y costo en DynamoDB.
-    Utiliza expresiones de actualización atómica e idempotencia por folio.
+    Utiliza expresiones de actualización atómica e idempotencia con ConditionExpression.
     """
     resource = get_dynamodb_resource()
     table = resource.Table(DYNAMODB_TABLE_PRODUCTOS)
@@ -336,7 +345,7 @@ def actualizar_stock_y_costo_dynamo(
         item = res_get["Item"]
         folios_previos = set(item.get("folios_aplicados") or [])
 
-        # Idempotencia: si el folio ya se aplicó a este SKU, no duplicar stock
+        # Idempotencia previa (fast-path): si la operación/folio ya se aplicó a este SKU, no duplicar stock
         if folio_limpio and folio_limpio in folios_previos:
             stock_actual = int(item.get("stock_actual", 0))
             return {
@@ -348,7 +357,7 @@ def actualizar_stock_y_costo_dynamo(
                 "mensaje": f"El folio '{folio_limpio}' ya fue aplicado previamente a este SKU. Se omite incremento."
             }
 
-        # 2. Expresión de actualización atómica (cláusulas únicas SET y ADD)
+        # 2. Expresión de actualización atómica con ConditionExpression contra condiciones de carrera
         now_iso = datetime.now(timezone.utc).isoformat()
         set_clauses = ["precio_costo = :costo", "actualizado_en = :now"]
         add_clauses = ["stock_actual :cant"]
@@ -362,25 +371,48 @@ def actualizar_stock_y_costo_dynamo(
             set_clauses.append("precio_venta = :pv")
             expr_values[":pv"] = Decimal(str(nuevo_precio_venta))
 
+        update_kwargs: Dict[str, Any] = {
+            "Key": {"sku": sku},
+            "ReturnValues": "ALL_NEW"
+        }
+
         if folio_limpio:
             add_clauses.append("folios_aplicados :folio_set")
             expr_values[":folio_set"] = {folio_limpio}
+            expr_values[":folio_str"] = folio_limpio
+            update_kwargs["ConditionExpression"] = "attribute_exists(sku) AND (attribute_not_exists(folios_aplicados) OR NOT contains(folios_aplicados, :folio_str))"
+        else:
+            update_kwargs["ConditionExpression"] = "attribute_exists(sku)"
 
-        update_expr = f"SET {', '.join(set_clauses)} ADD {', '.join(add_clauses)}"
+        update_kwargs["UpdateExpression"] = f"SET {', '.join(set_clauses)} ADD {', '.join(add_clauses)}"
+        update_kwargs["ExpressionAttributeValues"] = expr_values
 
-        upd_res = table.update_item(
-            Key={"sku": sku},
-            UpdateExpression=update_expr,
-            ExpressionAttributeValues=expr_values,
-            ReturnValues="ALL_NEW"
-        )
+        try:
+            upd_res = table.update_item(**update_kwargs)
+        except ClientError as ce:
+            err_code = ce.response.get("Error", {}).get("Code")
+            if err_code == "ConditionalCheckFailedException" and folio_limpio:
+                res_actual = table.get_item(Key={"sku": sku})
+                item_actual = res_actual.get("Item", item)
+                stock_actual = int(item_actual.get("stock_actual", 0))
+                return {
+                    "exito": True,
+                    "ya_aplicado": True,
+                    "sku": sku,
+                    "stock_anterior": stock_actual,
+                    "nuevo_stock": stock_actual,
+                    "mensaje": f"El folio '{folio_limpio}' ya fue aplicado concurrentemente a este SKU. Se omite incremento."
+                }
+            raise
+
         nuevo_item = upd_res.get("Attributes", {})
         nuevo_stock = int(nuevo_item.get("stock_actual", 0))
+        stock_anterior = nuevo_stock - int(cantidad)
 
         return {
             "exito": True,
             "sku": sku,
-            "stock_anterior": int(item.get("stock_actual", 0)),
+            "stock_anterior": stock_anterior,
             "nuevo_stock": nuevo_stock,
             "nuevo_costo": float(nuevo_costo),
             "nuevo_precio_venta": float(nuevo_precio_venta) if nuevo_precio_venta else float(item.get("precio_venta", 0)),
@@ -415,8 +447,25 @@ def registrar_nuevo_producto_dynamo(datos_producto: Dict[str, Any]) -> Dict[str,
     item["actualizado_en"] = item["creado_en"]
 
     try:
-        table.put_item(Item=item)
+        table.put_item(Item=item, ConditionExpression="attribute_not_exists(sku)")
         return {"exito": True, "sku": sku, "mensaje": f"Producto con SKU '{sku}' registrado exitosamente."}
+    except ClientError as ce:
+        err_code = ce.response.get("Error", {}).get("Code")
+        if err_code == "ConditionalCheckFailedException":
+            folios_nuevos = set(item.get("folios_aplicados") or [])
+            if folios_nuevos:
+                res_exist = table.get_item(Key={"sku": sku})
+                folios_exist = set(res_exist.get("Item", {}).get("folios_aplicados") or [])
+                if folios_nuevos.issubset(folios_exist):
+                    return {
+                        "exito": True,
+                        "ya_aplicado": True,
+                        "sku": sku,
+                        "mensaje": f"El producto con SKU '{sku}' ya fue creado por este folio previamente."
+                    }
+            return {"exito": False, "mensaje": f"El producto con SKU '{sku}' ya existe en el catálogo."}
+        logger.error("Error al registrar nuevo SKU '%s' en DynamoDB: %s", sku, str(ce))
+        return {"exito": False, "mensaje": str(ce)}
     except Exception as e:
         logger.error("Error al registrar nuevo SKU '%s' en DynamoDB: %s", sku, str(e))
         return {"exito": False, "mensaje": str(e)}
@@ -440,6 +489,15 @@ def guardar_auditoria_factura_dynamo(registro_auditoria: Dict[str, Any]) -> Dict
 
     item_sanitizado = _sanitizar(item)
     try:
+        id_item = item_sanitizado.get("id")
+        if id_item:
+            res_prev = table.get_item(Key={"id": id_item})
+            prev_item = res_prev.get("Item")
+            if prev_item:
+                merged = dict(prev_item)
+                merged.update(item_sanitizado)
+                item_sanitizado = merged
+
         table.put_item(Item=item_sanitizado)
         return {"exito": True, "id": item_sanitizado.get("id")}
     except Exception as e:

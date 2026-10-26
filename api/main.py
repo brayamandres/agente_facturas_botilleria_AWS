@@ -12,12 +12,16 @@ import json
 import logging
 import uuid
 from decimal import Decimal
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, status, Request, Body
-from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.responses import JSONResponse, HTMLResponse, Response
+from pydantic import BaseModel, Field
+from api.services.estadisticas import scan_completo, calcular_estadisticas, exportar_csv, detalle_factura
+from api.services.asistente import responder
+from shared.finanzas import validar_finanzas
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -93,6 +97,120 @@ def tablas_view(request: Request):
     return templates.TemplateResponse("tablas.html", {"request": request})
 
 
+@app.get("/estadisticas", response_class=HTMLResponse)
+def estadisticas_view(request: Request):
+    return templates.TemplateResponse(request=request, name="estadisticas.html", context={})
+
+
+def _historial_completo():
+    return scan_completo(get_dynamodb_resource().Table(DYNAMODB_TABLE_HISTORIAL))
+
+
+def _estadisticas(desde, hasta, moneda):
+    try:
+        return calcular_estadisticas(_historial_completo(), desde, hasta, moneda)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception:
+        logger.exception("No se pudo consultar estadísticas")
+        raise HTTPException(status_code=503, detail="No se pudo consultar el historial. Revisa la conexión con DynamoDB.")
+
+
+@app.get("/api/estadisticas")
+def obtener_estadisticas(desde: date, hasta: date, moneda: str = "CLP"):
+    moneda = moneda.strip().upper()
+    if len(moneda) != 3 or not moneda.isascii() or not moneda.isalpha():
+        raise HTTPException(status_code=422, detail="Moneda inválida.")
+    return _deserializar_decimales(_estadisticas(desde.isoformat(), hasta.isoformat(), moneda))
+
+
+@app.get("/api/facturas/{factura_id}/detalle")
+def obtener_detalle_factura(factura_id: str):
+    try:
+        tabla = get_dynamodb_resource().Table(DYNAMODB_TABLE_HISTORIAL)
+        factura = tabla.get_item(Key={"id": factura_id}, ConsistentRead=True).get("Item")
+    except Exception:
+        logger.exception("No se pudo consultar detalle de factura")
+        raise HTTPException(status_code=503, detail="No fue posible consultar el detalle.")
+    if not factura:
+        raise HTTPException(status_code=404, detail="Factura no encontrada.")
+    return _deserializar_decimales(detalle_factura(factura))
+
+
+@app.get("/api/estadisticas/exportar.csv")
+def descargar_estadisticas(desde: date, hasta: date, moneda: str = "CLP"):
+    if len(moneda) != 3 or not moneda.isascii() or not moneda.isalpha():
+        raise HTTPException(status_code=422, detail="Moneda inválida.")
+    datos = _estadisticas(desde.isoformat(), hasta.isoformat(), moneda.upper())
+    return Response(exportar_csv(datos), media_type="text/csv; charset=utf-8", headers={"Content-Disposition": f'attachment; filename="facturas_{desde}_{hasta}.csv"'})
+
+
+class PreguntaAsistente(BaseModel):
+    pregunta: str = Field(min_length=3, max_length=1000)
+    desde: date
+    hasta: date
+    moneda: str = Field(default="CLP", pattern=r"^[A-Z]{3}$")
+
+
+@app.post("/api/asistente")
+def consultar_asistente(payload: PreguntaAsistente):
+    try:
+        return _deserializar_decimales(responder(payload.pregunta, _historial_completo(), payload.desde.isoformat(), payload.hasta.isoformat(), payload.moneda))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception:
+        logger.exception("Fallo en consulta del asistente")
+        raise HTTPException(status_code=503, detail="No fue posible consultar los datos del asistente.")
+
+
+class ImpuestoAdicional(BaseModel):
+    nombre: str = Field(default="Impuesto adicional", max_length=200)
+    codigo: str | None = Field(default=None, max_length=30)
+    tasa: str | None = Field(default=None, max_length=30)
+    monto: Decimal | None = Field(default=None, ge=0)
+
+
+class EncabezadoFinanciero(BaseModel):
+    proveedor: str = Field(min_length=1, max_length=200)
+    fecha_emision: date | None = None
+    rut_proveedor: str | None = Field(default=None, max_length=20)
+    moneda: str | None = Field(default=None, max_length=3)
+    monto_neto: Decimal | None = Field(default=None, ge=0)
+    monto_impuestos: Decimal | None = Field(default=None, ge=0)
+    monto_iva: Decimal | None = Field(default=None, ge=0)
+    impuestos_adicionales: List[ImpuestoAdicional] | None = Field(default=None, max_length=100)
+    monto_exento: Decimal | None = Field(default=None, ge=0)
+    total_factura: Decimal | None = Field(default=None, ge=0)
+
+
+@app.patch("/api/facturas/{factura_id}/finanzas")
+def actualizar_finanzas(factura_id: str, payload: EncabezadoFinanciero):
+    """Corrige solo el encabezado: no publica eventos ni modifica inventario."""
+    tabla = get_dynamodb_resource().Table(DYNAMODB_TABLE_HISTORIAL)
+    actual = tabla.get_item(Key={"id": factura_id}, ConsistentRead=True).get("Item")
+    if not actual:
+        raise HTTPException(status_code=404, detail="Factura no encontrada.")
+    if actual.get("estado") not in {"COMPLETADO", "REQUIERE_REVISION_MANUAL", "COMPLETADO_CON_ERRORES"}:
+        raise HTTPException(status_code=409, detail="Espera a que termine el procesamiento de la factura.")
+    datos = payload.model_dump()
+    datos["fecha_emision"] = payload.fecha_emision.isoformat() if payload.fecha_emision else None
+    financieros = validar_finanzas(datos)
+    campos = {**financieros, "proveedor": payload.proveedor.strip(), "finanzas_actualizadas_en": datetime.now(timezone.utc).isoformat()}
+    nombres = {f"#c{i}": k for i, k in enumerate(campos)}
+    valores = {f":v{i}": v for i, v in enumerate(campos.values())}
+    nombres["#id"] = "id"
+    nombres["#estado"] = "estado"
+    valores[":estado_actual"] = actual["estado"]
+    try:
+        tabla.update_item(Key={"id": factura_id}, UpdateExpression="SET " + ", ".join(f"#c{i} = :v{i}" for i in range(len(campos))), ExpressionAttributeNames=nombres, ExpressionAttributeValues=valores, ConditionExpression="attribute_exists(#id) AND #estado = :estado_actual")
+    except Exception as exc:
+        if getattr(exc, "response", {}).get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            raise HTTPException(status_code=409, detail="La factura cambió. Actualiza antes de guardar.") from exc
+        logger.exception("No se pudo guardar encabezado financiero")
+        raise HTTPException(status_code=503, detail="No fue posible guardar los datos financieros.") from exc
+    return _deserializar_decimales(campos)
+
+
 # ==============================================================================
 # 2. HEALTH CHECK PARA APPLICATION LOAD BALANCER (ALB)
 # ==============================================================================
@@ -154,6 +272,12 @@ async def upload_factura(file: UploadFile = File(...)):
             }
         )
 
+        if not SQS_QUEUE_URL:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="SQS_QUEUE_URL no está configurada. No se pudo encolar la factura."
+            )
+
         # 3. Inicializar registro de seguimiento en DynamoDB
         dynamo = get_dynamodb_resource()
         tabla_historial = dynamo.Table(DYNAMODB_TABLE_HISTORIAL)
@@ -188,12 +312,11 @@ async def upload_factura(file: UploadFile = File(...)):
             "timestamp": ahora_iso
         }
 
-        if SQS_QUEUE_URL:
-            sqs = get_sqs_client()
-            sqs.send_message(
-                QueueUrl=SQS_QUEUE_URL,
-                MessageBody=json.dumps(evento)
-            )
+        sqs = get_sqs_client()
+        sqs.send_message(
+            QueueUrl=SQS_QUEUE_URL,
+            MessageBody=json.dumps(evento)
+        )
 
         return JSONResponse(
             status_code=status.HTTP_202_ACCEPTED,
@@ -276,14 +399,15 @@ def obtener_url_imagen_factura(factura_id: str):
 
     res = tabla.get_item(Key={"id": factura_id})
     item = res.get("Item")
-    if not item or not item.get("s3_key"):
+    s3_key = (item.get("s3_key") or item.get("ruta_imagen")) if item else None
+    if not item or not s3_key:
         raise HTTPException(status_code=404, detail="Factura o imagen no encontrada.")
 
     s3 = get_s3_client()
     try:
         url = s3.generate_presigned_url(
             "get_object",
-            Params={"Bucket": S3_BUCKET_NAME, "Key": item["s3_key"]},
+            Params={"Bucket": S3_BUCKET_NAME, "Key": s3_key},
             ExpiresIn=3600
         )
         return {"url": url}
@@ -307,6 +431,12 @@ def resolver_item_humano(factura_id: str, payload: Dict[str, Any] = Body(...)):
     despacha el evento al Worker vía SQS para vectorización/actualización
     y actualiza la bitácora en DynamoDB.
     """
+    if not SQS_QUEUE_URL:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="SQS_QUEUE_URL no está configurada. No se pudo encolar la resolución humana."
+        )
+
     accion = payload.get("accion")  # "CREAR_NUEVO", "ASOCIAR_EXISTENTE", "OMITIR"
     glosa = payload.get("glosa_original", "Ítem sin glosa")
     sku = payload.get("sku")
@@ -321,11 +451,10 @@ def resolver_item_humano(factura_id: str, payload: Dict[str, Any] = Body(...)):
         "timestamp": datetime.now(timezone.utc).isoformat()
     }
 
-    if SQS_QUEUE_URL:
-        sqs.send_message(
-            QueueUrl=SQS_QUEUE_URL,
-            MessageBody=json.dumps(mensaje_sqs)
-        )
+    sqs.send_message(
+        QueueUrl=SQS_QUEUE_URL,
+        MessageBody=json.dumps(mensaje_sqs)
+    )
 
     # 2. Registrar avance inmediato en la bitácora y estado provisional de los ítems en DynamoDB
     dynamo = get_dynamodb_resource()
@@ -383,10 +512,9 @@ def listar_productos_catalogo():
     tabla = dynamo.Table(DYNAMODB_TABLE_PRODUCTOS)
 
     try:
-        res = tabla.scan(
+        items = scan_completo(tabla,
             ProjectionExpression="sku, nombre, marca, categoria, subcategoria, formato, precio_costo, precio_venta, stock_actual, stock_minimo, activo, creado_en, actualizado_en"
         )
-        items = res.get("Items", [])
         return {
             "total": len(items),
             "productos": _deserializar_decimales(items)
@@ -406,8 +534,7 @@ def listar_historial_facturas():
     tabla = dynamo.Table(DYNAMODB_TABLE_HISTORIAL)
 
     try:
-        res = tabla.scan()
-        items = res.get("Items", [])
+        items = scan_completo(tabla)
         items_limpios = _deserializar_decimales(items)
 
         for item in items_limpios:

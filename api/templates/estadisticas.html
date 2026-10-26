@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Estadísticas · Botillería AWS Agent</title>
+  <link rel="stylesheet" href="/static/estadisticas.css">
+  <script defer src="/static/estadisticas.js"></script>
+  <link rel="stylesheet" href="/static/navbar.css">
+</head>
+<body>
+  {% set active_page = 'estadisticas' %}
+  {% include '_navbar.html' %}
+  <main>
+    <div class="heading"><div><p class="eyebrow">CONTROL DE COMPRAS</p><h1>Estadísticas</h1><p class="muted">Gasto según las fechas de emisión y los totales validados de tus facturas.</p></div><a id="exportar" class="button secondary" href="#" aria-disabled="true">↓ Exportar CSV</a></div>
+    <form id="filtros" class="filters">
+      <label>Desde<input id="desde" type="date" required></label><label>Hasta<input id="hasta" type="date" required></label>
+      <label>Moneda<select id="moneda"><option>CLP</option><option>USD</option><option>EUR</option></select></label>
+      <button class="button" type="submit">Aplicar período</button><button id="tres-meses" type="button" class="button secondary">Últimos 3 meses</button>
+    </form>
+    <p id="estado-carga" class="status" role="status" aria-live="polite">Cargando estadísticas…</p>
+    <section class="cards" aria-label="Resumen del período">
+      <article class="card"><span>Gasto validado del período</span><strong id="gasto">—</strong><small>Importes financieros válidos, sin duplicados</small></article>
+      <article class="card"><span>Facturas procesadas</span><strong id="procesadas">—</strong><small>Con fecha dentro del período seleccionado</small></article>
+      <article class="card"><span>Por revisar</span><strong id="pendientes" class="amber">—</strong><small>Encabezados o productos pendientes</small></article>
+    </section>
+    <div id="aviso" class="notice" hidden></div>
+    <div class="dashboard">
+      <div class="charts">
+        <section class="panel"><div class="panel-heading"><h2>Gasto por proveedor</h2><span id="cantidad-proveedores" class="badge"></span></div><div id="proveedores" class="provider-chart"></div></section>
+        <section class="panel"><div class="panel-heading"><h2>Evolución mensual</h2><span class="muted">Solo gasto validado</span></div><div id="meses" class="month-chart" aria-label="Gasto por mes"></div></section>
+        <section class="panel"><div class="panel-heading"><h2>Gasto por producto</h2><label class="product-limit">Mostrar<select id="limite-productos"><option value="10">Top 10</option><option value="20">Top 20</option><option value="0">Todos</option></select></label></div>
+          <p class="muted">Ordenado por importe. Sin repartir impuestos del encabezado ni cargos.</p><div id="productos" class="product-chart" aria-label="Comparación del gasto por producto"></div><p id="cobertura-productos" class="muted" role="status"></p>
+        </section>
+      </div>
+      <aside class="panel assistant"><div class="assistant-header"><span class="assistant-icon" aria-hidden="true">✦</span><div><h2>Asistente de facturas</h2><p class="muted">Respuestas respaldadas por tu historial.</p></div></div>
+        <p class="scope">Consulta el período y la moneda seleccionados. El asistente solo lee datos.</p>
+        <div class="suggestions"><button type="button" data-question="¿Cuánto gasté por proveedor?">Gasto por proveedor</button><button type="button" data-question="¿Qué facturas están por revisar?">Facturas por revisar</button></div>
+        <div id="chat" class="chat" role="log" aria-live="polite"><div class="message bot">Puedo consultar gasto, proveedores, pendientes y detalles por folio. Selecciona un período para empezar.</div></div>
+        <form id="chat-form"><label class="sr-only" for="pregunta">Pregunta al asistente</label><input id="pregunta" placeholder="Escribe tu pregunta…" maxlength="1000" minlength="3" required autocomplete="off"><button id="enviar" class="button" type="submit">Enviar</button></form>
+      </aside>
+    </div>
+    <section class="panel records"><div class="panel-heading"><h2>Facturas del período</h2><span class="muted">Selecciona una factura para revisar su encabezado.</span></div><div id="facturas"></div></section>
+    <section id="sin-fecha-panel" class="panel records" hidden><div class="panel-heading"><h2>Sin fecha de emisión</h2><span class="badge">Historial general · fuera del período</span></div><p class="muted">Completa estos encabezados para asignarlos al mes correcto. No se modifica el inventario.</p><div id="sin-fecha"></div></section>
+    <p class="footnote">No se suman monedas diferentes. Los totales del catálogo no se utilizan para reconstruir compras históricas. La validación comprueba datos y aritmética; no certifica validez tributaria.</p>
+  </main>
+  <dialog id="detalle"><div class="dialog-heading"><h2 id="detalle-titulo">Revisar factura</h2><button id="cerrar-detalle" class="icon-button" aria-label="Cerrar">×</button></div>
+    <p id="detalle-estado" class="muted"></p><ul id="motivos" class="reasons"></ul><a id="imagen" target="_blank" rel="noopener" class="text-link" hidden>Ver imagen original ↗</a>
+    <section class="invoice-lines"><h3>Productos y cargos registrados</h3><p id="detalle-lineas-estado" class="muted" role="status"></p><div id="detalle-lineas"></div></section>
+    <form id="finanzas-form"><div class="financial-grid">
+      <label class="wide">Proveedor<input name="proveedor" required maxlength="200"></label>
+      <label>RUT proveedor<input name="rut_proveedor" maxlength="20"></label><label>Fecha de emisión<input name="fecha_emision" type="date"></label>
+      <label>Moneda<input name="moneda" maxlength="3" placeholder="CLP"></label><label>Total factura<input name="total_factura" type="number" min="0" step="0.01"></label>
+      <label>Neto<input name="monto_neto" type="number" min="0" step="0.01"></label><label>Total de impuestos (IVA + adicionales)<input name="monto_impuestos" type="number" min="0" step="0.01"></label><label>Exento<input name="monto_exento" type="number" min="0" step="0.01"></label>
+      <div class="wide tax-section"><label class="tax-toggle"><input id="usar-desglose" type="checkbox"> Desglosar IVA e impuestos adicionales</label>
+        <div id="desglose-impuestos" hidden><label>IVA<input name="monto_iva" type="number" min="0" step="0.01"></label><p class="muted">Agrega cada monto IMP.ADIC. del documento. El total de impuestos se calcula sumando estos importes al IVA.</p><div id="impuestos-adicionales"></div><button id="agregar-impuesto" type="button" class="button secondary">+ Agregar impuesto adicional</button></div>
+      </div>
+    </div><p class="muted">Deja vacío lo desconocido. Usa 0 solo cuando figure en el documento. Guardar actualiza únicamente el encabezado financiero.</p><p id="guardar-estado" role="status"></p><button id="guardar" class="button" type="submit">Guardar encabezado</button></form>
+  </dialog>
+</body>
+</html>

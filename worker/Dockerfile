@@ -22,13 +22,14 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip install torch==2.6.0+cpu --index-url https://download.pytorch.org/whl/cpu
 
 # Copiar e instalar dependencias en una capa aislada para aprovechar la caché de Docker
-COPY requirements.txt .
+COPY worker/requirements.txt .
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --upgrade pip && \
     pip install -r requirements.txt
 
 # Copiar el código fuente del microservicio worker
-COPY . /app/worker
+COPY worker /app/worker
+COPY shared /app/shared
 
 # Crear directorio temporal para el procesamiento efímero stateless
 RUN mkdir -p /tmp

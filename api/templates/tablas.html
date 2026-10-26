@@ -21,36 +21,13 @@
       }
     }
   </script>
+  <link rel="stylesheet" href="/static/navbar.css">
 </head>
 <body class="bg-slate-900 text-slate-100 min-h-screen flex flex-col font-sans">
 
   <!-- NAVBAR -->
-  <header class="bg-slate-800 border-b border-slate-700 sticky top-0 z-40 shadow-lg">
-    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-      <div class="flex items-center space-x-3">
-        <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-500 flex items-center justify-center text-white shadow-md shadow-blue-900/40">
-          <i class="fa-solid fa-database text-lg"></i>
-        </div>
-        <div>
-          <h1 class="text-lg font-bold tracking-tight text-white flex items-center gap-2">
-            Visor de Base de Datos <span class="text-blue-400">DynamoDB</span>
-          </h1>
-          <p class="text-xs text-slate-400">Catálogo de Productos con Búsqueda Vectorial e Historial de Facturas</p>
-        </div>
-      </div>
-
-      <nav class="flex items-center space-x-2">
-        <a href="/" class="px-3 py-2 rounded-lg text-slate-300 hover:text-white hover:bg-slate-700/60 font-medium text-sm flex items-center gap-2 transition">
-          <i class="fa-solid fa-file-invoice text-brand-400"></i>
-          <span>Procesar Facturas</span>
-        </a>
-        <a href="/tablas" class="px-3 py-2 rounded-lg bg-slate-700 text-white font-medium text-sm flex items-center gap-2 shadow-sm border border-slate-600">
-          <i class="fa-solid fa-database text-blue-400"></i>
-          <span>Inventario & Historial</span>
-        </a>
-      </nav>
-    </div>
-  </header>
+  {% set active_page = 'tablas' %}
+  {% include '_navbar.html' %}
 
   <!-- CONTENIDO PRINCIPAL -->
   <main class="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8 space-y-6">
@@ -121,7 +98,7 @@
                 <th class="py-3 px-4 text-center">Stock Actual</th>
                 <th class="py-3 px-4 text-right">P. Costo</th>
                 <th class="py-3 px-4 text-right">P. Venta</th>
-                <th class="py-3 px-4 text-center">Margen</th>
+                <th class="py-3 px-4 text-center">Recargo %</th>
               </tr>
             </thead>
             <tbody id="tbody-productos" class="divide-y divide-slate-700/60 text-slate-200">
@@ -489,7 +466,7 @@
             </td>
             <td class="py-2.5 px-4 text-right text-slate-300 font-mono">$${costo.toLocaleString("es-CL")}</td>
             <td class="py-2.5 px-4 text-right text-emerald-400 font-mono font-bold">$${venta.toLocaleString("es-CL")}</td>
-            <td class="py-2.5 px-4 text-center font-mono text-slate-400">${margen}%</td>
+            <td class="py-2.5 px-4 text-center font-mono text-slate-400" title="Recargo sobre el precio de costo">${margen}%</td>
           </tr>
         `;
       }).join("");

@@ -5,9 +5,11 @@ alta de nuevos SKUs y auditoría histórica de facturas.
 """
 import uuid
 import logging
+from decimal import Decimal
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from langchain_core.tools import tool
+from shared.finanzas import validar_finanzas
 
 from worker.src.services.dynamodb import (
     obtener_producto_por_sku,
@@ -88,9 +90,23 @@ def registrar_nuevo_producto(
     """
     logger.info("Registrando nuevo SKU '%s' en catálogo con vector nativo...", sku)
 
+    folio_limpio = (
+        str(folio_factura).strip()
+        if folio_factura and str(folio_factura).strip().lower() not in ["none", "null", "s/f", "n/a", ""]
+        else None
+    )
+
     # Verificar si el SKU ya existe
     existente = obtener_producto_por_sku(sku)
     if existente.get("encontrado"):
+        folios_existentes = set(existente.get("producto", {}).get("folios_aplicados") or [])
+        if folio_limpio and folio_limpio in folios_existentes:
+            return {
+                "exito": True,
+                "ya_aplicado": True,
+                "sku": sku,
+                "mensaje": f"El producto con SKU '{sku}' ya fue registrado por el folio '{folio_limpio}'."
+            }
         return {
             "exito": False,
             "mensaje": f"El producto con SKU '{sku}' ya existe en el catálogo."
@@ -98,12 +114,6 @@ def registrar_nuevo_producto(
 
     texto_descriptivo = f"{nombre} {marca} {categoria} {subcategoria} {formato}".strip()
     vector = generar_embedding(texto_descriptivo)
-
-    folio_limpio = (
-        str(folio_factura).strip()
-        if folio_factura and str(folio_factura).strip().lower() not in ["none", "null", "s/f", "n/a", ""]
-        else None
-    )
 
     datos_producto = {
         "sku": sku,
@@ -134,9 +144,12 @@ def registrar_auditoria_factura(
     items_procesados: List[Dict[str, Any]],
     estado: str = "COMPLETADO",
     ruta_imagen: Optional[str] = None,
-    total_factura: Optional[float] = None,
+    s3_key: Optional[str] = None,
+    total_factura: Optional[Decimal] = None,
     id_auditoria: Optional[str] = None,
-    bitacora: Optional[List[str]] = None
+    bitacora: Optional[List[str]] = None,
+    datos_financieros: Optional[Dict[str, Any]] = None,
+    cargos: Optional[List[Dict[str, Any]]] = None
 ) -> Dict[str, Any]:
     """
     Registra el procesamiento completo de una factura en la tabla 'botilleria-historial-facturas'
@@ -149,6 +162,7 @@ def registrar_auditoria_factura(
         items_procesados (list[dict]): Detalle de los ítems homologados y aplicados.
         estado (str, optional): Estado final ('COMPLETADO' o 'COMPLETADO_CON_ERRORES').
         ruta_imagen (str | None, optional): Identificador de la imagen o S3 key.
+        s3_key (str | None, optional): Clave del objeto en Amazon S3 para el visor web.
         total_factura (float | None, optional): Monto total de la factura.
         id_auditoria (str | None, optional): ID único de seguimiento creado en la ingesta.
         bitacora (list[str] | None, optional): Registro cronológico de ejecución.
@@ -157,6 +171,7 @@ def registrar_auditoria_factura(
         dict: Diccionario confirmando el ID único de auditoría registrado.
     """
     id_final = id_auditoria or str(uuid.uuid4())
+    s3_key_final = s3_key if s3_key is not None else (ruta_imagen or "")
     registro = {
         "id": id_final,
         "folio": str(folio),
@@ -164,8 +179,10 @@ def registrar_auditoria_factura(
         "total_items": total_items,
         "items": items_procesados,
         "estado": estado,
-        "ruta_imagen": ruta_imagen or "",
-        "total_factura": float(total_factura) if total_factura else 0.0,
+        "ruta_imagen": ruta_imagen or s3_key_final,
+        "s3_key": s3_key_final,
+        **validar_finanzas({**(datos_financieros or {}), "proveedor": proveedor, "total_factura": total_factura}),
+        "cargos": cargos or [],
         "fecha_procesamiento": datetime.now(timezone.utc).isoformat()
     }
     if bitacora:
